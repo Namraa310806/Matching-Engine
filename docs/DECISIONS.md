@@ -104,5 +104,59 @@ matching-engine/
 - No web server
 - No external market data integration
 
+## Domain Model Design
+
+### Price Representation
+- **Decision**: Use `int64_t` for Price type instead of floating-point (double)
+- **Rationale**: 
+  - Floating-point arithmetic introduces rounding errors and comparison issues
+  - Integer ticks provide exact arithmetic and deterministic behavior
+  - Prices can be represented as integer ticks (e.g., cents, basis points)
+  - Avoids precision problems in matching logic and trade calculations
+- **Trade-offs**: Requires price scaling logic (e.g., $10.50 becomes 1050 cents)
+
+### Timestamp Representation
+- **Decision**: Use monotonic sequence numbers instead of wall-clock timestamps
+- **Rationale**:
+  - Sequence numbers provide strict ordering guarantees
+  - No issues with clock synchronization or adjustments
+  - Simpler to generate and compare
+  - Deterministic ordering is critical for matching engine correctness
+- **Trade-offs**: Cannot correlate with real-world time, but this is acceptable for internal ordering
+
+### Domain Events Architecture
+- **Decision**: Use simple structs for domain events (Trade, MarketDataEvent) instead of full publisher/subscriber system
+- **Rationale**:
+  - Phase 1 focuses on core domain model, not event distribution
+  - Simple structs are sufficient to represent event data
+  - Avoids premature optimization and complexity
+  - Publisher/subscriber can be added later when needed
+- **Trade-offs**: No built-in event dispatch mechanism, but this is intentional for the current phase
+
+### Type Aliases
+- **Decision**: Define explicit type aliases (OrderId, Price, Qty)
+- **Rationale**:
+  - Improves code readability and self-documentation
+  - Makes type system more expressive
+  - Easier to change underlying types if needed
+  - Prevents accidental misuse of types
+
+### Order Structure
+- **Decision**: Order struct with id, side, price, quantity, filled, sequence
+- **Rationale**:
+  - Captures all essential order state
+  - Filled quantity tracking enables partial fill support
+  - Sequence number for ordering
+  - Simple data structure with basic validation
+
+### Validation Strategy
+- **Decision**: Basic invariant validation in constructors
+- **Rationale**:
+  - Catches obvious errors early (e.g., zero quantity, filled > quantity)
+  - Not over-engineered - keeps validation simple
+  - Can be enhanced later if needed
+- **Trade-offs**: Limited validation scope, but sufficient for current phase
+
 ## Version History
 - v0.1.0 (2026-09-14): Initial project foundation
+- v0.1.1 (2026-09-14): Core domain model implementation

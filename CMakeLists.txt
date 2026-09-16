@@ -6,8 +6,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Build configurations
-set(CMAKE_CXX_FLAGS_DEBUG "-O2 -Wall -Wextra -Wpedantic -fsanitize=address,undefined")
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native -DNDEBUG")
+set(CMAKE_CXX_FLAGS_DEBUG "-O2 -Wall -Wextra -Wpedantic -fsanitize=address,undefined" CACHE STRING "" FORCE)
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native -DNDEBUG" CACHE STRING "" FORCE)
 
 # Enable testing
 enable_testing()
@@ -34,6 +34,7 @@ FetchContent_MakeAvailable(benchmark)
 # engine_lib static library
 add_library(engine_lib STATIC
     src/engine.cpp
+    src/types.cpp
 )
 
 target_include_directories(engine_lib
@@ -44,6 +45,7 @@ target_include_directories(engine_lib
 # engine_tests executable
 add_executable(engine_tests
     tests/test_main.cpp
+    tests/domain_test.cpp
 )
 
 target_link_libraries(engine_tests
