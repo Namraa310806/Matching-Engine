@@ -157,6 +157,74 @@ matching-engine/
   - Can be enhanced later if needed
 - **Trade-offs**: Limited validation scope, but sufficient for current phase
 
+## Limit Order Book Design (v0 - Phase 1.2)
+
+### Data Structure Choice
+- **Decision**: Use `std::map<Price, std::deque<Order>>` for limit order book
+- **Rationale for std::map**:
+  - Provides O(log n) insertion and lookup
+  - Maintains keys in sorted order automatically
+  - Simple, well-understood standard library container
+  - No custom memory management required
+  - Easy to reason about and debug
+  - Sufficient for correctness baseline before optimization
+- **Rationale for std::deque within price levels**:
+  - Provides O(1) insertion at both ends
+  - Maintains FIFO ordering naturally
+  - No pointer chasing or complex allocation patterns
+  - Good cache locality for sequential access
+  - Simple to implement and verify
+- **Trade-offs**:
+  - Not optimal for high-frequency trading (will be optimized in later phases)
+  - Logarithmic time complexity instead of constant time
+  - Additional memory overhead from tree structure
+  - This is intentional - v0 is a correctness baseline, not a performance target
+
+### Price Level Ordering
+- **Buy side**: `std::map<Price, std::deque<Order>, std::greater<Price>>`
+  - Descending order: highest price first (best bid at begin())
+  - Best bid retrieval: O(1) by accessing bids_.begin()->first
+- **Sell side**: `std::map<Price, std::deque<Order>, std::less<Price>>`
+  - Ascending order: lowest price first (best ask at begin())
+  - Best ask retrieval: O(1) by accessing asks_.begin()->first
+- **Rationale**: Direct access to best prices without additional computation
+
+### Complexity Analysis
+- **Insertion (add_limit_order)**: O(log n) where n is number of price levels
+  - Map lookup/insertion: O(log n)
+  - Deque push_back: O(1) amortized
+- **Best bid/ask lookup**: O(1)
+  - Direct access to first element of map
+- **Order count queries**: O(n) where n is number of price levels
+  - Must iterate through all price levels to count orders
+- **Price level inspection**: O(1) for map lookup + O(k) for copying k orders
+- **Get all orders**: O(n + m) where n is price levels, m is total orders
+
+### Why This is a Baseline
+- **Purpose**: Establish correctness before optimization
+- **No matching logic**: Orders simply rest on the book
+- **No concurrency**: Single-threaded, no locks
+- **No custom allocators**: Standard library memory management
+- **No networking**: Pure in-memory data structure
+- **No order ID indexing**: Orders accessed only by price/time priority
+- **Future phases will optimize**: This design validates correctness before adding complexity
+
+### Order Priority
+- **FIFO at same price**: Orders with same price are stored in deque in insertion order
+- **Sequence number**: Monotonic sequence number ensures strict ordering
+- **Preservation**: Order objects are copied into the book, preserving all fields
+- **No silent modification**: Caller's Order object is not modified
+
+### API Design
+- **add_limit_order**: Insert order without matching
+- **best_bid/best_ask**: Query best prices (returns std::nullopt if empty)
+- **buy_side_empty/sell_side_empty/empty**: Query emptiness
+- **get_orders_at_bid_price/get_orders_at_ask_price**: Inspect specific price levels
+- **buy_order_count/sell_order_count**: Count orders
+- **buy_price_level_count/sell_price_level_count**: Count price levels
+- **get_all_buy_orders/get_all_sell_orders**: Full book inspection for testing
+
 ## Version History
 - v0.1.0 (2026-09-14): Initial project foundation
 - v0.1.1 (2026-09-14): Core domain model implementation
+- v0.1.2 (2026-09-16): Limit order book v0 (correctness baseline)

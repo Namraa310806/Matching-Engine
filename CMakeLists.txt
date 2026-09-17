@@ -46,6 +46,7 @@ target_include_directories(engine_lib
 add_executable(engine_tests
     tests/test_main.cpp
     tests/domain_test.cpp
+    tests/orderbook_test.cpp
 )
 
 target_link_libraries(engine_tests
