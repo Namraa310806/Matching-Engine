@@ -224,7 +224,161 @@ matching-engine/
 - **buy_price_level_count/sell_price_level_count**: Count price levels
 - **get_all_buy_orders/get_all_sell_orders**: Full book inspection for testing
 
+## Matching Engine Design (v0 - Phase 1.3)
+
+### Matching Algorithm
+- **Decision**: Implement price-time priority matching with FIFO within price levels
+- **Rationale**:
+  - Standard exchange matching algorithm ensures fairness
+  - Price priority ensures best execution for market participants
+  - Time priority prevents order jumping at same price
+  - Simple to implement and verify correctness
+- **Trade-offs**: No optimization for high-frequency trading (intentional for correctness baseline)
+
+### Matching Rules
+- **Buy order matching**: A buy limit order matches when `resting_ask_price <= incoming_buy_price`
+- **Sell order matching**: A sell limit order matches when `resting_bid_price >= incoming_sell_price`
+- **Price priority**: Always match best available price first
+  - Buy orders consume lowest ask price first
+  - Sell orders consume highest bid price first
+- **Time priority**: Within same price level, oldest order fills first (FIFO)
+
+### Partial Fill Semantics
+- **Decision**: Support partial fills for both incoming and resting orders
+- **Implementation**:
+  - Trade quantity = min(incoming_remaining_quantity, resting_remaining_quantity)
+  - Reduce filled quantity for both orders
+  - Remove resting order from book when fully filled
+  - Stop matching when incoming order is fully filled
+  - Add remaining limit order quantity to book if not fully filled
+- **Rationale**: Standard exchange behavior, realistic market simulation
+
+### Execution Price
+- **Decision**: Execution price is always the resting order's price
+- **Rationale**:
+  - Standard exchange practice
+  - Price improvement for market orders
+  - Predictable and fair pricing
+- **Example**: Buy at 105 crossing sell at 100 executes at 100
+
+### Market Order Behavior
+- **Decision**: Market orders never rest on the book
+- **Implementation**:
+  - Market buy consumes asks from best ask until filled or ask side empty
+  - Market sell consumes bids from best bid until filled or bid side empty
+  - Unfilled quantity is discarded (not added to book)
+  - No price limit for market orders
+- **Rationale**: Standard exchange behavior, market orders are for immediate execution
+- **Trade-offs**: Potential for partial fills when liquidity insufficient
+
+### Order Lifecycle Events
+- **Decision**: Generate MarketDataEvent for order lifecycle stages
+- **Events**:
+  - OrderAdded: When order is received
+  - OrderPartiallyFilled: When order receives a partial fill
+  - OrderFullyFilled: When order is completely filled
+- **Rationale**: Provides visibility into order state without complex pub/sub infrastructure
+- **Trade-offs**: Simple vector return instead of event queue (sufficient for current phase)
+
+### Trade Events
+- **Decision**: Generate Trade event for every successful match
+- **Trade contains**:
+  - buy_order_id: ID of the buy order
+  - sell_order_id: ID of the sell order
+  - execution_price: Price at which trade occurred (resting order price)
+  - execution_quantity: Quantity traded
+  - sequence: Monotonic sequence number for ordering
+- **Rationale**: Complete trade record for audit and reconciliation
+
+### Order Ownership and Mutation
+- **Decision**: Copy orders into the engine, do not mutate caller's state
+- **Implementation**:
+  - `submit_order` copies the incoming order
+  - Caller's Order object remains unchanged
+  - All modifications happen on the internal copy
+- **Rationale**: Prevents unexpected side effects, clear ownership semantics
+- **Trade-offs**: Slight performance overhead from copying (acceptable for correctness phase)
+
+### Limit Order Resting Behavior
+- **Decision**: Limit orders rest on book after matching if not fully filled
+- **Implementation**:
+  - After matching attempt, if limit order has remaining quantity, add to book
+  - Market orders never rest (price = 0 indicates market order)
+- **Rationale**: Standard limit order behavior, provides liquidity to market
+
+### Empty Price Level Removal
+- **Decision**: Remove price levels immediately when last order is filled
+- **Implementation**: Erase price level from map when deque becomes empty
+- **Rationale**: Maintains book integrity, prevents stale price levels
+- **Trade-offs**: Slight overhead from map erase (acceptable)
+
+### Quantity Conservation
+- **Decision**: Enforce strict quantity conservation invariants
+- **Invariants**:
+  - `filled <= quantity` for all orders
+  - `remaining = quantity - filled` for all orders
+  - No negative quantities
+  - No quantity creation or disappearance
+- **Verification**: Tests verify `submitted_quantity = executed_quantity + remaining_quantity`
+- **Rationale**: Critical for financial correctness, prevents accounting errors
+
+### Correctness Requirements
+- **No negative quantities**: All quantities must be >= 0
+- **Filled <= quantity**: Filled quantity cannot exceed total quantity
+- **No duplicate order IDs**: Each order ID is unique in active book
+- **No filled orders on book**: Fully filled orders are immediately removed
+- **No empty price levels**: Price levels removed when last order filled
+- **Best bid/ask correctness**: Must always reflect actual best prices
+- **FIFO within price levels**: Older orders at same price fill first
+- **Price priority across levels**: Better prices filled before worse prices
+- **No quantity creation**: Total quantity cannot increase
+- **No quantity disappearance**: Total quantity cannot decrease (except through execution)
+
+### API Design
+- **submit_order**: Main entry point for order submission
+  - Returns pair of vectors: (trades, market_data_events)
+  - Handles both limit and market orders
+  - Performs matching and resting logic
+- **add_limit_order**: Legacy method for direct order addition (no matching)
+- **Query methods**: best_bid, best_ask, buy_side_empty, sell_side_empty, empty
+- **Inspection methods**: get_orders_at_bid_price, get_orders_at_ask_price, get_all_buy_orders, get_all_sell_orders
+- **Count methods**: buy_order_count, sell_order_count, buy_price_level_count, sell_price_level_count
+
+### Sequence Number Management
+- **Decision**: Use monotonic sequence numbers for event ordering
+- **Implementation**: Increment sequence counter for each event (trade, market data)
+- **Rationale**: Provides strict ordering for event streams
+- **Trade-offs**: Cannot correlate with wall-clock time (acceptable for internal ordering)
+
+### Testing Strategy
+- **Unit tests**: 35+ comprehensive test cases covering:
+  - Basic matching (crossing and non-crossing)
+  - Full fills (incoming fills resting, resting fills incoming)
+  - Partial fills (single and multiple orders)
+  - Price priority (best price first)
+  - Time priority (FIFO at same price)
+  - Market orders (consumption, exhaustion, no resting)
+  - Book state (empty levels, best bid/ask updates)
+  - Quantity conservation (no loss or creation)
+  - Order state (filled <= quantity, no negatives)
+  - Trade events (correct information)
+  - Market data events (lifecycle tracking)
+- **Randomized testing**: Fixed seed RNG generates deterministic order sequences
+- **Invariant verification**: Check all correctness invariants after each operation
+
+### Non-Goals (Current Phase)
+- No cancellation functionality
+- No order modification
+- No OrderId lookup index
+- No performance optimization
+- No concurrency
+- No SPSC queue
+- No networking
+- No custom allocators
+- No lock-free structures
+
 ## Version History
 - v0.1.0 (2026-09-14): Initial project foundation
 - v0.1.1 (2026-09-14): Core domain model implementation
 - v0.1.2 (2026-09-16): Limit order book v0 (correctness baseline)
+- v0.1.3 (2026-09-17): Matching engine v0 (correctness-first implementation)

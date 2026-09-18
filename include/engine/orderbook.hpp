@@ -18,6 +18,13 @@ public:
     // Orders are stored without matching logic in this phase
     void add_limit_order(const Order& order);
 
+    // Submit an order to the matching engine
+    // Returns a vector of Trade events generated from matching
+    // Returns a vector of MarketDataEvent for order lifecycle events
+    // For limit orders: attempts to match, then rests remaining quantity
+    // For market orders: attempts to match, never rests
+    std::pair<std::vector<Trade>, std::vector<MarketDataEvent>> submit_order(const Order& order);
+
     // Get the best bid (highest buy price)
     // Returns std::nullopt if buy side is empty
     std::optional<Price> best_bid() const;
@@ -64,6 +71,20 @@ public:
     std::vector<Order> get_all_sell_orders() const;
 
 private:
+    // Match a buy order against the sell side
+    // Returns trades and market data events
+    std::pair<std::vector<Trade>, std::vector<MarketDataEvent>> match_buy_order(Order& order);
+
+    // Match a sell order against the buy side
+    // Returns trades and market data events
+    std::pair<std::vector<Trade>, std::vector<MarketDataEvent>> match_sell_order(Order& order);
+
+    // Add a limit order to the appropriate side (resting order)
+    void add_resting_order(const Order& order);
+
+    // Generate market data event for order lifecycle
+    MarketDataEvent create_order_event(const Order& order, MarketDataEventType type) const;
+
     // Buy side: descending order (std::greater for highest price first)
     // Best bid is at begin()
     std::map<Price, std::deque<Order>, std::greater<Price>> bids_;
@@ -71,6 +92,9 @@ private:
     // Sell side: ascending order (std::less for lowest price first)
     // Best ask is at begin()
     std::map<Price, std::deque<Order>, std::less<Price>> asks_;
+
+    // Sequence number for ordering events
+    uint64_t sequence_ = 0;
 };
 
 } // namespace engine
