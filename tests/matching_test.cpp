@@ -2,8 +2,51 @@
 #include <engine/orderbook.hpp>
 #include <engine/types.hpp>
 #include <numeric>
+#include <vector>
+#include <unordered_set>
 
 using namespace engine;
+
+// Helper function to verify book/index consistency
+// Returns true if the book and order_index_ are consistent
+bool verify_book_index_consistency(const OrderBook& book) {
+    // Get all orders from the book
+    auto buy_orders = book.get_all_buy_orders();
+    auto sell_orders = book.get_all_sell_orders();
+    
+    // Track all OrderIds found in the book
+    std::unordered_set<OrderId> book_order_ids;
+    
+    // Verify no order has filled > quantity and collect OrderIds
+    for (const auto& order : buy_orders) {
+        if (order.filled > order.quantity) return false;
+        book_order_ids.insert(order.id);
+    }
+    for (const auto& order : sell_orders) {
+        if (order.filled > order.quantity) return false;
+        book_order_ids.insert(order.id);
+    }
+    
+    // Check for duplicate OrderIds in the book
+    size_t total_book_orders = buy_orders.size() + sell_orders.size();
+    if (book_order_ids.size() != total_book_orders) {
+        return false; // Duplicate OrderId found
+    }
+    
+    // Verify that every order in the book is in the index
+    for (OrderId id : book_order_ids) {
+        if (!book.order_id_in_index(id)) {
+            return false; // Order in book but not in index
+        }
+    }
+    
+    // Verify that the index size matches the book order count
+    if (book.order_index_size() != total_book_orders) {
+        return false; // Index size mismatch
+    }
+    
+    return true;
+}
 
 // ============================================================================
 // Basic Matching Tests
@@ -818,4 +861,460 @@ TEST(MatchingTest, RandomizedCorrectnessTest) {
     
     // Note: This is an approximate check since market orders don't rest
     EXPECT_LE(total_executed, total_submitted);
+}
+
+// ============================================================================
+// Cancellation Tests
+// ============================================================================
+
+TEST(CancellationTest, CancelExistingBid) {
+    OrderBook book;
+    
+    // Add a buy order
+    book.add_limit_order(Order(1, Side::Buy, 100, 100, 10));
+    
+    // Cancel the order
+    auto [cancelled, events] = book.cancel_order(1);
+    
+    EXPECT_TRUE(cancelled);
+    EXPECT_EQ(events.size(), 1);
+    EXPECT_EQ(events[0].event_type, MarketDataEventType::OrderCancelled);
+    EXPECT_EQ(events[0].order_id, 1);
+    
+    // Verify order is removed
+    auto buy_orders = book.get_all_buy_orders();
+    EXPECT_EQ(buy_orders.size(), 0);
+    EXPECT_EQ(book.buy_price_level_count(), 0);
+}
+
+TEST(CancellationTest, CancelExistingAsk) {
+    OrderBook book;
+    
+    // Add a sell order
+    book.add_limit_order(Order(1, Side::Sell, 100, 100, 10));
+    
+    // Cancel the order
+    auto [cancelled, events] = book.cancel_order(1);
+    
+    EXPECT_TRUE(cancelled);
+    EXPECT_EQ(events.size(), 1);
+    EXPECT_EQ(events[0].event_type, MarketDataEventType::OrderCancelled);
+    EXPECT_EQ(events[0].order_id, 1);
+    
+    // Verify order is removed
+    auto sell_orders = book.get_all_sell_orders();
+    EXPECT_EQ(sell_orders.size(), 0);
+    EXPECT_EQ(book.sell_price_level_count(), 0);
+}
+
+TEST(CancellationTest, CancelOnlyOrderAtPriceLevel) {
+    OrderBook book;
+    
+    // Add a single buy order
+    book.add_limit_order(Order(1, Side::Buy, 100, 100, 10));
+    
+    // Cancel the order
+    auto [cancelled, events] = book.cancel_order(1);
+    
+    EXPECT_TRUE(cancelled);
+    
+    // Verify price level is removed
+    EXPECT_EQ(book.buy_price_level_count(), 0);
+    EXPECT_FALSE(book.best_bid().has_value());
+}
+
+TEST(CancellationTest, CancelOrderFromMiddleOfFIFOQueue) {
+    OrderBook book;
+    
+    // Add three orders at same price
+    book.add_limit_order(Order(1, Side::Buy, 100, 50, 10));
+    book.add_limit_order(Order(2, Side::Buy, 100, 50, 11));
+    book.add_limit_order(Order(3, Side::Buy, 100, 50, 12));
+    
+    // Cancel the middle order
+    auto [cancelled, events] = book.cancel_order(2);
+    
+    EXPECT_TRUE(cancelled);
+    
+    // Verify remaining orders are still in correct FIFO order
+    auto buy_orders = book.get_orders_at_bid_price(100);
+    ASSERT_EQ(buy_orders.size(), 2);
+    EXPECT_EQ(buy_orders[0].id, 1);
+    EXPECT_EQ(buy_orders[1].id, 3);
+}
+
+TEST(CancellationTest, CancelOldestOrder) {
+    OrderBook book;
+    
+    // Add three orders at same price
+    book.add_limit_order(Order(1, Side::Buy, 100, 50, 10));
+    book.add_limit_order(Order(2, Side::Buy, 100, 50, 11));
+    book.add_limit_order(Order(3, Side::Buy, 100, 50, 12));
+    
+    // Cancel the oldest order
+    auto [cancelled, events] = book.cancel_order(1);
+    
+    EXPECT_TRUE(cancelled);
+    
+    // Verify remaining orders are still in correct FIFO order
+    auto buy_orders = book.get_orders_at_bid_price(100);
+    ASSERT_EQ(buy_orders.size(), 2);
+    EXPECT_EQ(buy_orders[0].id, 2);
+    EXPECT_EQ(buy_orders[1].id, 3);
+}
+
+TEST(CancellationTest, CancelNewestOrder) {
+    OrderBook book;
+    
+    // Add three orders at same price
+    book.add_limit_order(Order(1, Side::Buy, 100, 50, 10));
+    book.add_limit_order(Order(2, Side::Buy, 100, 50, 11));
+    book.add_limit_order(Order(3, Side::Buy, 100, 50, 12));
+    
+    // Cancel the newest order
+    auto [cancelled, events] = book.cancel_order(3);
+    
+    EXPECT_TRUE(cancelled);
+    
+    // Verify remaining orders are still in correct FIFO order
+    auto buy_orders = book.get_orders_at_bid_price(100);
+    ASSERT_EQ(buy_orders.size(), 2);
+    EXPECT_EQ(buy_orders[0].id, 1);
+    EXPECT_EQ(buy_orders[1].id, 2);
+}
+
+TEST(CancellationTest, CancelNonexistentOrderId) {
+    OrderBook book;
+    
+    // Try to cancel non-existent order
+    auto [cancelled, events] = book.cancel_order(999);
+    
+    EXPECT_FALSE(cancelled);
+    EXPECT_EQ(events.size(), 0);
+}
+
+TEST(CancellationTest, CancelAlreadyFilledOrder) {
+    OrderBook book;
+    
+    // Add a sell order
+    book.add_limit_order(Order(1, Side::Sell, 100, 100, 10));
+    
+    // Submit a buy order that fully fills it
+    book.submit_order(Order(2, Side::Buy, 105, 100, 11));
+    
+    // Try to cancel the already-filled order
+    auto [cancelled, events] = book.cancel_order(1);
+    
+    EXPECT_FALSE(cancelled);
+    EXPECT_EQ(events.size(), 0);
+}
+
+TEST(CancellationTest, CancelPartiallyFilledOrderThatRests) {
+    OrderBook book;
+    
+    // Add a large sell order
+    book.add_limit_order(Order(1, Side::Sell, 100, 1000, 10));
+    
+    // Submit a buy order that partially fills it
+    book.submit_order(Order(2, Side::Buy, 105, 300, 11));
+    
+    // Cancel the partially filled order
+    auto [cancelled, events] = book.cancel_order(1);
+    
+    EXPECT_TRUE(cancelled);
+    EXPECT_EQ(events.size(), 1);
+    EXPECT_EQ(events[0].event_type, MarketDataEventType::OrderCancelled);
+    
+    // Verify order is removed
+    auto sell_orders = book.get_all_sell_orders();
+    EXPECT_EQ(sell_orders.size(), 0);
+}
+
+TEST(CancellationTest, CancelAfterMultiplePriceLevelsExist) {
+    OrderBook book;
+    
+    // Add orders at multiple price levels
+    book.add_limit_order(Order(1, Side::Buy, 100, 50, 10));
+    book.add_limit_order(Order(2, Side::Buy, 95, 50, 11));
+    book.add_limit_order(Order(3, Side::Buy, 90, 50, 12));
+    
+    // Cancel order at middle price level
+    auto [cancelled, events] = book.cancel_order(2);
+    
+    EXPECT_TRUE(cancelled);
+    
+    // Verify other price levels remain
+    EXPECT_EQ(book.buy_price_level_count(), 2);
+    EXPECT_TRUE(book.best_bid().has_value());
+    EXPECT_EQ(book.best_bid().value(), 100);
+}
+
+TEST(CancellationTest, PriceLevelDisappearsWhenEmpty) {
+    OrderBook book;
+    
+    // Add two orders at same price
+    book.add_limit_order(Order(1, Side::Buy, 100, 50, 10));
+    book.add_limit_order(Order(2, Side::Buy, 100, 50, 11));
+    
+    // Cancel both orders
+    book.cancel_order(1);
+    book.cancel_order(2);
+    
+    // Verify price level is removed
+    EXPECT_EQ(book.buy_price_level_count(), 0);
+    EXPECT_FALSE(book.best_bid().has_value());
+}
+
+TEST(CancellationTest, FIFOOrderingUnchangedAfterCancellation) {
+    OrderBook book;
+    
+    // Add five orders at same price
+    book.add_limit_order(Order(1, Side::Buy, 100, 20, 10));
+    book.add_limit_order(Order(2, Side::Buy, 100, 20, 11));
+    book.add_limit_order(Order(3, Side::Buy, 100, 20, 12));
+    book.add_limit_order(Order(4, Side::Buy, 100, 20, 13));
+    book.add_limit_order(Order(5, Side::Buy, 100, 20, 14));
+    
+    // Cancel order 3
+    book.cancel_order(3);
+    
+    // Verify remaining orders maintain FIFO order
+    auto buy_orders = book.get_orders_at_bid_price(100);
+    ASSERT_EQ(buy_orders.size(), 4);
+    EXPECT_EQ(buy_orders[0].id, 1);
+    EXPECT_EQ(buy_orders[1].id, 2);
+    EXPECT_EQ(buy_orders[2].id, 4);
+    EXPECT_EQ(buy_orders[3].id, 5);
+}
+
+TEST(CancellationTest, FullyMatchedOrdersRemovedFromIndex) {
+    OrderBook book;
+    
+    // Add a sell order
+    book.add_limit_order(Order(1, Side::Sell, 100, 100, 10));
+    
+    // Submit a buy order that fully fills it
+    book.submit_order(Order(2, Side::Buy, 105, 100, 11));
+    
+    // Try to cancel the fully matched order
+    auto [cancelled, events] = book.cancel_order(1);
+    
+    EXPECT_FALSE(cancelled);
+}
+
+TEST(CancellationTest, MarketOrdersNeverIndexed) {
+    OrderBook book;
+    
+    // Add a sell order
+    book.add_limit_order(Order(1, Side::Sell, 100, 100, 10));
+    
+    // Submit a market buy order (use market order constructor with 4 params)
+    book.submit_order(Order(2, Side::Buy, 50, 11));
+    
+    // Try to cancel the market order
+    auto [cancelled, events] = book.cancel_order(2);
+    
+    EXPECT_FALSE(cancelled);
+}
+
+TEST(CancellationTest, RepeatedCancellationAttempts) {
+    OrderBook book;
+    
+    // Add a buy order
+    book.add_limit_order(Order(1, Side::Buy, 100, 100, 10));
+    
+    // Cancel successfully
+    auto [cancelled1, events1] = book.cancel_order(1);
+    EXPECT_TRUE(cancelled1);
+    
+    // Try to cancel again
+    auto [cancelled2, events2] = book.cancel_order(1);
+    EXPECT_FALSE(cancelled2);
+}
+
+TEST(CancellationTest, CancellationFollowedByNewOrderAtSamePrice) {
+    OrderBook book;
+    
+    // Add a buy order
+    book.add_limit_order(Order(1, Side::Buy, 100, 100, 10));
+    
+    // Cancel it
+    book.cancel_order(1);
+    
+    // Add a new order at same price
+    book.add_limit_order(Order(2, Side::Buy, 100, 50, 11));
+    
+    // Verify new order is present
+    auto buy_orders = book.get_orders_at_bid_price(100);
+    ASSERT_EQ(buy_orders.size(), 1);
+    EXPECT_EQ(buy_orders[0].id, 2);
+}
+
+TEST(CancellationTest, RandomizedCancellationScenarios) {
+    OrderBook book;
+    
+    // Fixed seed for reproducibility
+    uint64_t seed = 12345;
+    uint64_t next_id = 1;
+    uint64_t next_seq = 1;
+    
+    // Simple linear congruential generator
+    auto rng = [&seed]() {
+        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+        return seed;
+    };
+    
+    // Submit 50 random orders
+    std::vector<OrderId> submitted_ids;
+    for (int i = 0; i < 50; ++i) {
+        Side side = (rng() % 2 == 0) ? Side::Buy : Side::Sell;
+        Qty qty = (rng() % 100) + 1;
+        Price price = (rng() % 50) + 100;
+        
+        Order order(next_id++, side, price, qty, next_seq++);
+        book.submit_order(order);
+        submitted_ids.push_back(order.id);
+    }
+    
+    // Try to cancel random orders
+    for (int i = 0; i < 20; ++i) {
+        size_t idx = rng() % submitted_ids.size();
+        OrderId id_to_cancel = submitted_ids[idx];
+        
+        auto [cancelled, events] = book.cancel_order(id_to_cancel);
+        // Don't assert on result since order might already be filled or not resting
+    }
+    
+    // Verify book state is consistent
+    auto all_buy_orders = book.get_all_buy_orders();
+    for (const auto& order : all_buy_orders) {
+        EXPECT_LE(order.filled, order.quantity);
+        EXPECT_GE(order.remaining(), 0);
+    }
+    
+    auto all_sell_orders = book.get_all_sell_orders();
+    for (const auto& order : all_sell_orders) {
+        EXPECT_LE(order.filled, order.quantity);
+        EXPECT_GE(order.remaining(), 0);
+    }
+}
+
+TEST(CancellationTest, CancelOrderAfterPartialFillAndRest) {
+    OrderBook book;
+    
+    // Add a large sell order
+    book.add_limit_order(Order(1, Side::Sell, 100, 1000, 10));
+    
+    // Submit a buy order that partially fills it
+    book.submit_order(Order(2, Side::Buy, 105, 300, 11));
+    
+    // Verify the sell order is still resting
+    auto sell_orders = book.get_orders_at_ask_price(100);
+    ASSERT_EQ(sell_orders.size(), 1);
+    EXPECT_EQ(sell_orders[0].remaining(), 700);
+    
+    // Cancel the partially filled order
+    auto [cancelled, events] = book.cancel_order(1);
+    
+    EXPECT_TRUE(cancelled);
+    EXPECT_EQ(events.size(), 1);
+    EXPECT_EQ(events[0].event_type, MarketDataEventType::OrderCancelled);
+    
+    // Verify order is removed
+    sell_orders = book.get_orders_at_ask_price(100);
+    EXPECT_EQ(sell_orders.size(), 0);
+}
+
+TEST(CancellationTest, CancelOrderFromDifferentPriceLevels) {
+    OrderBook book;
+    
+    // Add orders at different price levels
+    book.add_limit_order(Order(1, Side::Buy, 100, 50, 10));
+    book.add_limit_order(Order(2, Side::Buy, 95, 50, 11));
+    book.add_limit_order(Order(3, Side::Buy, 90, 50, 12));
+    
+    // Cancel from highest price
+    book.cancel_order(1);
+    EXPECT_EQ(book.best_bid().value(), 95);
+    
+    // Cancel from lowest price
+    book.cancel_order(3);
+    EXPECT_EQ(book.best_bid().value(), 95);
+    
+    // Cancel remaining
+    book.cancel_order(2);
+    EXPECT_FALSE(book.best_bid().has_value());
+}
+
+TEST(CancellationTest, BookIndexConsistencyAfterCancellation) {
+    OrderBook book;
+    
+    // Add multiple orders
+    book.add_limit_order(Order(1, Side::Buy, 100, 50, 10));
+    book.add_limit_order(Order(2, Side::Buy, 100, 50, 11));
+    book.add_limit_order(Order(3, Side::Sell, 105, 50, 12));
+    book.add_limit_order(Order(4, Side::Sell, 105, 50, 13));
+    
+    // Verify consistency before cancellation
+    EXPECT_TRUE(verify_book_index_consistency(book));
+    
+    // Cancel from middle of buy price level
+    book.cancel_order(2);
+    EXPECT_TRUE(verify_book_index_consistency(book));
+    
+    // Cancel from sell price level
+    book.cancel_order(3);
+    EXPECT_TRUE(verify_book_index_consistency(book));
+    
+    // Cancel remaining orders
+    book.cancel_order(1);
+    book.cancel_order(4);
+    EXPECT_TRUE(verify_book_index_consistency(book));
+}
+
+TEST(CancellationTest, BookIndexConsistencyAfterMatching) {
+    OrderBook book;
+    
+    // Add orders
+    book.add_limit_order(Order(1, Side::Sell, 100, 100, 10));
+    book.add_limit_order(Order(2, Side::Sell, 100, 50, 11));
+    book.add_limit_order(Order(3, Side::Sell, 105, 50, 12));
+    
+    // Submit a buy order that partially fills
+    book.submit_order(Order(4, Side::Buy, 110, 150, 13));
+    
+    // Verify consistency after matching
+    EXPECT_TRUE(verify_book_index_consistency(book));
+    
+    // Cancel the partially filled order
+    book.cancel_order(1);
+    EXPECT_TRUE(verify_book_index_consistency(book));
+}
+
+TEST(CancellationTest, BookIndexConsistencyAfterMultipleOperations) {
+    OrderBook book;
+    
+    // Add orders
+    book.add_limit_order(Order(1, Side::Buy, 95, 100, 10));
+    book.add_limit_order(Order(2, Side::Buy, 95, 50, 11));
+    book.add_limit_order(Order(3, Side::Sell, 100, 100, 12));
+    book.add_limit_order(Order(4, Side::Sell, 100, 50, 13));
+    
+    EXPECT_TRUE(verify_book_index_consistency(book));
+    
+    // Submit matching order
+    book.submit_order(Order(5, Side::Buy, 105, 75, 14));
+    EXPECT_TRUE(verify_book_index_consistency(book));
+    
+    // Cancel an order
+    book.cancel_order(2);
+    EXPECT_TRUE(verify_book_index_consistency(book));
+    
+    // Add more orders
+    book.add_limit_order(Order(6, Side::Buy, 90, 50, 15));
+    EXPECT_TRUE(verify_book_index_consistency(book));
+    
+    // Submit another matching order
+    book.submit_order(Order(7, Side::Sell, 85, 100, 16));
+    EXPECT_TRUE(verify_book_index_consistency(book));
 }

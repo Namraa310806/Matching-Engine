@@ -29,6 +29,8 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/google/benchmark.git
     GIT_TAG v1.8.3
 )
+# Disable Werror for benchmark to avoid GCC 13 std::function regex false positive
+set(BENCHMARK_ENABLE_WERROR OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(benchmark)
 
 # engine_lib static library
@@ -55,6 +57,11 @@ target_link_libraries(engine_tests
         engine_lib
         gtest
         gtest_main
+)
+
+target_compile_definitions(engine_tests
+    PRIVATE
+        TESTING
 )
 
 include(GoogleTest)

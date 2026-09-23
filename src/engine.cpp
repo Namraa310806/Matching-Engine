@@ -8,9 +8,17 @@ void OrderBook::add_limit_order(const Order& order) {
     // Store order without matching logic (Phase 1.2)
     // Orders are copied to preserve caller's object
     if (order.side == Side::Buy) {
-        bids_[order.price].push_back(order);
+        auto& deque = bids_[order.price];
+        size_t index = deque.size();
+        deque.push_back(order);
+        // Add to OrderId index
+        order_index_[order.id] = OrderLocation(order.side, order.price, index);
     } else {
-        asks_[order.price].push_back(order);
+        auto& deque = asks_[order.price];
+        size_t index = deque.size();
+        deque.push_back(order);
+        // Add to OrderId index
+        order_index_[order.id] = OrderLocation(order.side, order.price, index);
     }
 }
 
@@ -83,8 +91,9 @@ std::pair<std::vector<Trade>, std::vector<MarketDataEvent>> OrderBook::match_buy
                 events.push_back(create_order_event(resting_order, MarketDataEventType::OrderPartiallyFilled));
             }
 
-            // Remove fully filled resting order
+            // Remove fully filled resting order from index and deque
             if (resting_order.is_fully_filled()) {
+                remove_from_order_index(resting_order.id);
                 price_level.pop_front();
             }
         }
@@ -144,8 +153,9 @@ std::pair<std::vector<Trade>, std::vector<MarketDataEvent>> OrderBook::match_sel
                 events.push_back(create_order_event(resting_order, MarketDataEventType::OrderPartiallyFilled));
             }
 
-            // Remove fully filled resting order
+            // Remove fully filled resting order from index and deque
             if (resting_order.is_fully_filled()) {
+                remove_from_order_index(resting_order.id);
                 price_level.pop_front();
             }
         }
@@ -168,9 +178,17 @@ std::pair<std::vector<Trade>, std::vector<MarketDataEvent>> OrderBook::match_sel
 
 void OrderBook::add_resting_order(const Order& order) {
     if (order.side == Side::Buy) {
-        bids_[order.price].push_back(order);
+        auto& deque = bids_[order.price];
+        size_t index = deque.size();
+        deque.push_back(order);
+        // Add to OrderId index
+        order_index_[order.id] = OrderLocation(order.side, order.price, index);
     } else {
-        asks_[order.price].push_back(order);
+        auto& deque = asks_[order.price];
+        size_t index = deque.size();
+        deque.push_back(order);
+        // Add to OrderId index
+        order_index_[order.id] = OrderLocation(order.side, order.price, index);
     }
 }
 
@@ -266,6 +284,103 @@ std::vector<Order> OrderBook::get_all_sell_orders() const {
         result.insert(result.end(), orders.begin(), orders.end());
     }
     return result;
+}
+
+std::pair<bool, std::vector<MarketDataEvent>> OrderBook::cancel_order(OrderId order_id) {
+    std::vector<MarketDataEvent> events;
+
+    // Look up the order in the index
+    auto it = order_index_.find(order_id);
+    if (it == order_index_.end()) {
+        // Order not found or not resting
+        return {false, events};
+    }
+
+    const OrderLocation& loc = it->second;
+
+    // Get the appropriate price level
+    if (loc.side == Side::Buy) {
+        auto price_it = bids_.find(loc.price);
+        if (price_it == bids_.end()) {
+            // Should not happen if index is consistent
+            order_index_.erase(it);
+            return {false, events};
+        }
+
+        auto& price_level = price_it->second;
+        if (loc.deque_index >= price_level.size()) {
+            // Should not happen if index is consistent
+            order_index_.erase(it);
+            return {false, events};
+        }
+
+        // Get the order to create event
+        const Order& order = price_level[loc.deque_index];
+
+        // Generate cancellation event
+        events.push_back(create_order_event(order, MarketDataEventType::OrderCancelled));
+
+        // Remove from deque
+        price_level.erase(price_level.begin() + loc.deque_index);
+
+        // Update indices of orders after the removed one
+        update_order_indices_after_removal(loc.side, loc.price, loc.deque_index);
+
+        // Remove empty price level
+        if (price_level.empty()) {
+            bids_.erase(price_it);
+        }
+    } else {
+        auto price_it = asks_.find(loc.price);
+        if (price_it == asks_.end()) {
+            // Should not happen if index is consistent
+            order_index_.erase(it);
+            return {false, events};
+        }
+
+        auto& price_level = price_it->second;
+        if (loc.deque_index >= price_level.size()) {
+            // Should not happen if index is consistent
+            order_index_.erase(it);
+            return {false, events};
+        }
+
+        // Get the order to create event
+        const Order& order = price_level[loc.deque_index];
+
+        // Generate cancellation event
+        events.push_back(create_order_event(order, MarketDataEventType::OrderCancelled));
+
+        // Remove from deque
+        price_level.erase(price_level.begin() + loc.deque_index);
+
+        // Update indices of orders after the removed one
+        update_order_indices_after_removal(loc.side, loc.price, loc.deque_index);
+
+        // Remove empty price level
+        if (price_level.empty()) {
+            asks_.erase(price_it);
+        }
+    }
+
+    // Remove from index
+    order_index_.erase(it);
+
+    return {true, events};
+}
+
+void OrderBook::remove_from_order_index(OrderId order_id) {
+    order_index_.erase(order_id);
+}
+
+void OrderBook::update_order_indices_after_removal(Side side, Price price, size_t removed_index) {
+    // Iterate through all orders in the index and update indices
+    // for orders at the same price level and side that come after the removed order
+    for (auto& [id, loc] : order_index_) {
+        if (loc.side == side && loc.price == price && loc.deque_index > removed_index) {
+            loc.deque_index--;
+        }
+    }
 }
 
 } // namespace engine
