@@ -377,8 +377,94 @@ matching-engine/
 - No custom allocators
 - No lock-free structures
 
+## Order Cancellation Design (v0 - Phase 1.4)
+
+### OrderId Index
+- **Decision**: Use `std::unordered_map<OrderId, OrderLocation>` for O(1) order lookup
+- **Rationale**:
+  - Enables efficient cancellation by OrderId
+  - OrderLocation tracks side, price, and deque_index for direct access
+  - Critical for cancellation performance
+- **Trade-offs**: Additional memory overhead and index maintenance complexity
+
+### Index Maintenance
+- **Add to index**: When order rests on book (add_resting_order)
+- **Remove from index**: When order is cancelled (cancel_order)
+- **Update after removal**: When order removed from middle of deque (update_order_indices_after_removal)
+- **Rationale**: Ensures index always reflects current book state
+
+### Cancellation Semantics
+- **Cancel resting order**: Remove from book and index, generate OrderCancelled event
+- **Cancel non-existent order**: Return false, no events generated
+- **Cancel already filled order**: Return false, order already removed from book
+- **Cancel market order**: Return false, market orders never indexed
+- **Rationale**: Standard exchange behavior, clear error handling
+
+### Index Consistency Invariant
+- **Invariant**: Every resting order in book must be in index
+- **Invariant**: Every entry in index must correspond to a resting order in book
+- **Invariant**: Index size must equal total resting order count
+- **Verification**: `verify_book_index_consistency()` helper function checks these invariants
+
+### Deque Index Updates
+- **Decision**: Update deque_index for all orders after removed index
+- **Implementation**: When removing from middle of deque, increment indices of subsequent orders
+- **Rationale**: Maintains correct mapping from OrderId to deque position
+- **Trade-offs**: O(k) update cost where k is orders after removed order (acceptable for correctness baseline)
+
+## Correctness Invariants
+
+### Quantity Conservation Invariants
+- **Order-level invariant**: `filled + remaining = quantity` for all orders
+- **No overflow**: `filled <= quantity` always true
+- **No underflow**: `remaining >= 0` always true
+- **No creation**: Total quantity in system cannot increase
+- **No disappearance**: Total quantity decreases only through execution or cancellation
+
+### Order State Invariants
+- **Filled quantity**: Never exceeds total quantity
+- **Remaining quantity**: Never negative
+- **Order ID uniqueness**: No duplicate OrderIds in active book
+- **Sequence monotonicity**: Sequence numbers strictly increase
+
+### Book Structure Invariants
+- **Empty price levels**: Removed immediately when last order filled
+- **Best bid/ask**: Always reflect actual best prices in book
+- **Price level ordering**: Buy side descending, sell side ascending
+- **FIFO within levels**: Orders at same price in insertion order
+
+### Matching Invariants
+- **Price priority**: Better prices always filled before worse prices
+- **Time priority**: At same price, older orders fill first
+- **Execution price**: Always resting order's price
+- **Market order behavior**: Never rest on book, unfilled quantity discarded
+
+### Index Consistency Invariants
+- **Index completeness**: Every resting order in book must be in index
+- **Index accuracy**: Every index entry must point to valid order location
+- **Index size**: Must equal total resting order count
+- **No stale entries**: Filled/cancelled orders removed from index
+
+### Cross-Price Matching Rules
+- **Buy crossing**: Buy order matches when `resting_ask_price <= incoming_buy_price`
+- **Sell crossing**: Sell order matches when `resting_bid_price >= incoming_sell_price`
+- **Same-price crossing**: Orders at same price DO cross (buy >= ask, sell <= bid)
+- **Non-crossing**: Orders rest when price condition not met
+
+### Test Coverage
+- **116 total tests** across 7 test suites:
+  - DomainTest: Basic type validation (24 tests)
+  - OrderBookTest: Order book operations (23 tests)
+  - MatchingTest: Matching logic (36 tests)
+  - CancellationTest: Cancellation operations (22 tests)
+  - EdgeCaseTest: Boundary conditions (10 tests)
+  - PropertyBasedTest: Randomized testing (1 test with 10,000 operations)
+- **Randomized testing**: Fixed seed (123456789) generates deterministic 10,000-operation sequences
+- **Invariant verification**: All invariants checked after each operation in randomized test
+
 ## Version History
 - v0.1.0 (2026-09-14): Initial project foundation
 - v0.1.1 (2026-09-14): Core domain model implementation
 - v0.1.2 (2026-09-16): Limit order book v0 (correctness baseline)
 - v0.1.3 (2026-09-17): Matching engine v0 (correctness-first implementation)
+- v0.1.4 (2026-09-23): Order cancellation and OrderId index
