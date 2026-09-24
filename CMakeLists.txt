@@ -78,3 +78,37 @@ target_link_libraries(engine_benchmarks
         benchmark::benchmark
         benchmark::benchmark_main
 )
+
+# order_gen tool
+add_executable(order_gen
+    tools/order_gen/main.cpp
+    tools/order_gen/order_generator.cpp
+)
+
+target_link_libraries(order_gen
+    PRIVATE
+        engine_lib
+)
+
+target_include_directories(order_gen
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/order_gen
+)
+
+# engine_cli tool
+add_executable(engine_cli
+    tools/engine_cli/main.cpp
+    tools/engine_cli/engine_cli.cpp
+    tools/order_gen/order_generator.cpp
+)
+
+target_link_libraries(engine_cli
+    PRIVATE
+        engine_lib
+)
+
+target_include_directories(engine_cli
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/engine_cli
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/order_gen
+)
