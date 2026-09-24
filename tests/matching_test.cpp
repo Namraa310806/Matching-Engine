@@ -5,6 +5,7 @@
 #include <vector>
 #include <unordered_set>
 #include <limits>
+#include <iostream>
 
 using namespace engine;
 
@@ -1489,6 +1490,12 @@ TEST(PropertyBasedTest, LargeScaleRandomizedCorrectnessWithConservationInvariant
     uint64_t next_id = 1;
     uint64_t next_seq = 1;
     
+    // Operation type counters for verification
+    int limit_order_count = 0;
+    int market_order_count = 0;
+    int cancel_count = 0;
+    int modify_count = 0;
+    
     // Simple linear congruential generator
     auto rng = [&seed]() {
         seed = (seed * 1103515245 + 12345) & 0x7fffffff;
@@ -1499,18 +1506,79 @@ TEST(PropertyBasedTest, LargeScaleRandomizedCorrectnessWithConservationInvariant
     
     // Submit 10,000 random operations
     for (int i = 0; i < 10000; ++i) {
-        // Operation type: 0=limit order, 1=market order, 2=cancel
+        // Operation type distribution (rng % 10):
+        // 0,1 (20%): cancel if orders exist
+        // 2 (10%): modify if orders exist
+        // 3-9 (70%): submit order
         int op_type = rng() % 10;
         
-        if (op_type < 3 && !resting_order_ids.empty()) {
-            // Cancel operation (30% chance when orders exist)
-            size_t idx = rng() % resting_order_ids.size();
-            OrderId id_to_cancel = resting_order_ids[idx];
-            
-            book.cancel_order(id_to_cancel);
-            resting_order_ids.erase(resting_order_ids.begin() + idx);
-        } else {
-            // Submit order
+        if (!resting_order_ids.empty()) {
+            if (op_type < 2) {
+                // Cancel operation (20% chance when orders exist)
+                size_t idx = rng() % resting_order_ids.size();
+                OrderId id_to_cancel = resting_order_ids[idx];
+                
+                book.cancel_order(id_to_cancel);
+                cancel_count++;
+                resting_order_ids.erase(resting_order_ids.begin() + idx);
+            } else if (op_type == 2) {
+                // Modify operation (10% chance when orders exist)
+                // Modification = cancel + re-add (loses time priority)
+                size_t idx = rng() % resting_order_ids.size();
+                OrderId id_to_modify = resting_order_ids[idx];
+                
+                // Find the order in the book to get its details
+                Order order_to_modify;
+                bool found = false;
+                auto all_buy = book.get_all_buy_orders();
+                for (const auto& o : all_buy) {
+                    if (o.id == id_to_modify) {
+                        order_to_modify = o;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    auto all_sell = book.get_all_sell_orders();
+                    for (const auto& o : all_sell) {
+                        if (o.id == id_to_modify) {
+                            order_to_modify = o;
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+                
+                if (found && order_to_modify.remaining() > 0) {
+                    // Cancel the original order
+                    book.cancel_order(id_to_modify);
+                    
+                    // Re-add with new quantity (modify by +/- 10-50%)
+                    Qty old_qty = order_to_modify.quantity;
+                    Qty old_filled = order_to_modify.filled;
+                    Qty old_remaining = order_to_modify.remaining();
+                    
+                    // Calculate new quantity (keep total >= filled)
+                    int change_pct = (rng() % 41) - 20; // -20% to +20%
+                    Qty new_qty = old_qty + (old_qty * change_pct / 100);
+                    if (new_qty < old_filled + 1) new_qty = old_filled + 1;
+                    
+                    // Re-submit the order with new quantity (loses time priority)
+                    Order modified_order(next_id++, order_to_modify.side, order_to_modify.price, new_qty, next_seq++);
+                    book.submit_order(modified_order);
+                    modify_count++;
+                    
+                    // Update resting order IDs
+                    resting_order_ids.erase(resting_order_ids.begin() + idx);
+                    if (modified_order.remaining() > 0) {
+                        resting_order_ids.push_back(modified_order.id);
+                    }
+                }
+            }
+        }
+        
+        if (op_type >= 3) {
+            // Submit order (70%)
             Side side = (rng() % 2 == 0) ? Side::Buy : Side::Sell;
             OrderType type = (rng() % 5 == 0) ? OrderType::Market : OrderType::Limit;
             
@@ -1520,6 +1588,7 @@ TEST(PropertyBasedTest, LargeScaleRandomizedCorrectnessWithConservationInvariant
             if (type == OrderType::Limit) {
                 Order order(next_id++, side, price, qty, next_seq++);
                 book.submit_order(order);
+                limit_order_count++;
                 
                 // Track resting orders
                 if (order.remaining() > 0) {
@@ -1528,6 +1597,7 @@ TEST(PropertyBasedTest, LargeScaleRandomizedCorrectnessWithConservationInvariant
             } else {
                 Order order(next_id++, side, qty, next_seq++);
                 book.submit_order(order);
+                market_order_count++;
                 // Market orders never rest
             }
         }
@@ -1571,6 +1641,17 @@ TEST(PropertyBasedTest, LargeScaleRandomizedCorrectnessWithConservationInvariant
         // due to order index maintenance bug (orders not removed when filled)
         // This is tracked separately and should be fixed
     }
+    
+    // Verify that modification operations were actually executed
+    EXPECT_GT(modify_count, 0) << "Modification operations should have been executed";
+    
+    // Report operation distribution
+    std::cout << "Operation distribution:\n";
+    std::cout << "  Limit orders: " << limit_order_count << "\n";
+    std::cout << "  Market orders: " << market_order_count << "\n";
+    std::cout << "  Cancellations: " << cancel_count << "\n";
+    std::cout << "  Modifications: " << modify_count << "\n";
+    std::cout << "  Total: " << (limit_order_count + market_order_count + cancel_count + modify_count) << "\n";
     
     // Final verification: all orders in book satisfy filled + remaining = quantity
     auto all_buy_orders = book.get_all_buy_orders();
