@@ -37,10 +37,13 @@ struct ExecutionStats {
 class EngineCLI {
 public:
     EngineCLI();
-    
+
     // Execute a workload file against the engine
     bool execute_workload(const std::string& filename);
-    
+
+    // Execute a replay file against the engine (with version checking)
+    bool execute_replay(const std::string& filename);
+
     // Get execution statistics
     const ExecutionStats& stats() const { return stats_; }
     

@@ -8,6 +8,7 @@ void print_usage(const char* program_name) {
               << "Generate deterministic order flow workloads for the matching engine.\n\n"
               << "Options:\n"
               << "  -o, --output FILE       Output workload file (default: workload.txt)\n"
+              << "  -R, --replay FILE       Output replay file (versioned, self-contained)\n"
               << "  -n, --num-orders N      Number of orders to generate (default: 1000)\n"
               << "  -l, --limit-ratio R     Ratio of limit orders 0.0-1.0 (default: 0.9)\n"
               << "  -b, --buy-ratio R       Ratio of buy orders 0.0-1.0 (default: 0.5)\n"
@@ -21,23 +22,35 @@ void print_usage(const char* program_name) {
               << "  -h, --help              Show this help message\n\n"
               << "Examples:\n"
               << "  " << program_name << " -o small.txt -n 100\n"
+              << "  " << program_name << " -R small.replay -n 100\n"
               << "  " << program_name << " -o large.txt -n 1000000 -r 12345\n"
+              << "  " << program_name << " -R large.replay -n 1000000 -r 12345\n"
               << "  " << program_name << " -o custom.txt -l 0.8 -b 0.6 -v 0.02\n";
 }
 
 int main(int argc, char* argv[]) {
     tools::GeneratorConfig config;
     std::string output_file = "workload.txt";
-    
+    std::string replay_file;
+    bool generate_replay = false;
+
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        
+
         if (arg == "-h" || arg == "--help") {
             print_usage(argv[0]);
             return 0;
         } else if (arg == "-o" || arg == "--output") {
             if (i + 1 < argc) {
                 output_file = argv[++i];
+            } else {
+                std::cerr << "Error: " << arg << " requires a filename argument\n";
+                return 1;
+            }
+        } else if (arg == "-R" || arg == "--replay") {
+            if (i + 1 < argc) {
+                replay_file = argv[++i];
+                generate_replay = true;
             } else {
                 std::cerr << "Error: " << arg << " requires a filename argument\n";
                 return 1;
@@ -161,14 +174,22 @@ int main(int argc, char* argv[]) {
     std::cout << "Generating " << config.num_orders << " orders with seed " << config.rng_seed << "...\n";
     tools::OrderGenerator generator(config);
     generator.generate();
-    
+
     // Write to file
-    if (!generator.write_to_file(output_file)) {
-        std::cerr << "Error: Failed to write workload to file\n";
-        return 1;
+    if (generate_replay) {
+        if (!generator.write_replay_file(replay_file)) {
+            std::cerr << "Error: Failed to write replay file\n";
+            return 1;
+        }
+        std::cout << "Replay file written to " << replay_file << "\n";
+    } else {
+        if (!generator.write_to_file(output_file)) {
+            std::cerr << "Error: Failed to write workload to file\n";
+            return 1;
+        }
+        std::cout << "Workload written to " << output_file << "\n";
     }
-    
-    std::cout << "Workload written to " << output_file << "\n";
+
     std::cout << "Configuration:\n";
     std::cout << "  num_orders: " << config.num_orders << "\n";
     std::cout << "  limit_ratio: " << config.limit_ratio << "\n";
@@ -180,6 +201,6 @@ int main(int argc, char* argv[]) {
     std::cout << "  rng_seed: " << config.rng_seed << "\n";
     std::cout << "  min_qty: " << config.min_qty << "\n";
     std::cout << "  max_qty: " << config.max_qty << "\n";
-    
+
     return 0;
 }

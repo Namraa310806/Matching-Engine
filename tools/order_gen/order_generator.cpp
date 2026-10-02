@@ -153,7 +153,7 @@ bool OrderGenerator::write_to_file(const std::string& filename) const {
         std::cerr << "Failed to open file for writing: " << filename << std::endl;
         return false;
     }
-    
+
     // Write header
     file << "# Workload Configuration\n";
     file << "num_orders=" << config_.num_orders << "\n";
@@ -170,7 +170,7 @@ bool OrderGenerator::write_to_file(const std::string& filename) const {
     file << "# Format: sequence|action|side|price|quantity|order_id\n";
     file << "# Actions: 0=SubmitLimit, 1=SubmitMarket, 2=Cancel\n";
     file << "# Sides: 0=Buy, 1=Sell\n";
-    
+
     // Write orders
     for (const auto& order : orders_) {
         file << order.sequence << "|"
@@ -180,7 +180,37 @@ bool OrderGenerator::write_to_file(const std::string& filename) const {
             << order.quantity << "|"
             << order.order_id << "\n";
     }
-    
+
+    file.close();
+    return true;
+}
+
+bool OrderGenerator::write_replay_file(const std::string& filename) const {
+    std::ofstream file(filename);
+    if (!file.is_open()) {
+        std::cerr << "Failed to open replay file for writing: " << filename << std::endl;
+        return false;
+    }
+
+    // Write replay file header with version
+    file << "# Replay File - Self-contained order stream for deterministic replay\n";
+    file << "replay_version=" << REPLAY_FORMAT_VERSION << "\n";
+    file << "num_orders=" << orders_.size() << "\n";
+    file << "# End Header\n";
+    file << "# Format: sequence|action|side|price|quantity|order_id\n";
+    file << "# Actions: 0=SubmitLimit, 1=SubmitMarket, 2=Cancel\n";
+    file << "# Sides: 0=Buy, 1=Sell\n";
+
+    // Write orders
+    for (const auto& order : orders_) {
+        file << order.sequence << "|"
+            << static_cast<int>(order.action) << "|"
+            << static_cast<int>(order.side) << "|"
+            << order.price << "|"
+            << order.quantity << "|"
+            << order.order_id << "\n";
+    }
+
     file.close();
     return true;
 }
@@ -191,54 +221,149 @@ bool OrderGenerator::read_from_file(const std::string& filename, std::vector<Wor
         std::cerr << "Failed to open file for reading: " << filename << std::endl;
         return false;
     }
-    
+
     orders.clear();
     std::string line;
-    
+
     while (std::getline(file, line)) {
         // Skip comments and empty lines
         if (line.empty() || line[0] == '#') {
             continue;
         }
-        
+
         // Check if this is a configuration line
         if (line.find('=') != std::string::npos) {
             continue;  // Skip configuration lines
         }
-        
+
         // Parse order line
         std::istringstream iss(line);
         std::string token;
         WorkloadOrder order;
-        
+
         // sequence
         if (!std::getline(iss, token, '|')) break;
         order.sequence = std::stoull(token);
-        
+
         // action
         if (!std::getline(iss, token, '|')) break;
         order.action = static_cast<OrderAction>(std::stoi(token));
-        
+
         // side
         if (!std::getline(iss, token, '|')) break;
         order.side = static_cast<engine::Side>(std::stoi(token));
-        
+
         // price
         if (!std::getline(iss, token, '|')) break;
         order.price = std::stoll(token);
-        
+
         // quantity
         if (!std::getline(iss, token, '|')) break;
         order.quantity = std::stoull(token);
-        
+
         // order_id
         if (!std::getline(iss, token, '|')) break;
         order.order_id = std::stoull(token);
-        
+
         orders.push_back(order);
     }
-    
+
     file.close();
+    return true;
+}
+
+bool OrderGenerator::read_replay_file(const std::string& filename, std::vector<WorkloadOrder>& orders, uint32_t& version) {
+    std::ifstream file(filename);
+    if (!file.is_open()) {
+        std::cerr << "Failed to open replay file for reading: " << filename << std::endl;
+        return false;
+    }
+
+    orders.clear();
+    version = 0;
+    std::string line;
+    bool header_complete = false;
+
+    while (std::getline(file, line)) {
+        // Skip empty lines
+        if (line.empty()) {
+            continue;
+        }
+
+        // Process header
+        if (!header_complete) {
+            if (line[0] == '#') {
+                // Comment line
+                if (line.find("# End Header") != std::string::npos) {
+                    header_complete = true;
+                }
+                continue;
+            }
+
+            // Parse header fields
+            size_t eq_pos = line.find('=');
+            if (eq_pos != std::string::npos) {
+                std::string key = line.substr(0, eq_pos);
+                std::string value = line.substr(eq_pos + 1);
+
+                if (key == "replay_version") {
+                    version = std::stoul(value);
+                }
+                // num_orders is also in header but we don't need it for parsing
+            }
+            continue;
+        }
+
+        // Skip comments after header
+        if (line[0] == '#') {
+            continue;
+        }
+
+        // Parse order line
+        std::istringstream iss(line);
+        std::string token;
+        WorkloadOrder order;
+
+        // sequence
+        if (!std::getline(iss, token, '|')) break;
+        order.sequence = std::stoull(token);
+
+        // action
+        if (!std::getline(iss, token, '|')) break;
+        order.action = static_cast<OrderAction>(std::stoi(token));
+
+        // side
+        if (!std::getline(iss, token, '|')) break;
+        order.side = static_cast<engine::Side>(std::stoi(token));
+
+        // price
+        if (!std::getline(iss, token, '|')) break;
+        order.price = std::stoll(token);
+
+        // quantity
+        if (!std::getline(iss, token, '|')) break;
+        order.quantity = std::stoull(token);
+
+        // order_id
+        if (!std::getline(iss, token, '|')) break;
+        order.order_id = std::stoull(token);
+
+        orders.push_back(order);
+    }
+
+    file.close();
+
+    // Validate version
+    if (version == 0) {
+        std::cerr << "Error: No replay_version found in replay file\n";
+        return false;
+    }
+
+    if (version != REPLAY_FORMAT_VERSION) {
+        std::cerr << "Error: Replay file version " << version << " is not supported (current version: " << REPLAY_FORMAT_VERSION << ")\n";
+        return false;
+    }
+
     return true;
 }
 

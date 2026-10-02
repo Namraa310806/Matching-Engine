@@ -50,6 +50,15 @@ add_executable(engine_tests
     tests/domain_test.cpp
     tests/orderbook_test.cpp
     tests/matching_test.cpp
+    tests/replay_test.cpp
+    tools/order_gen/order_generator.cpp
+    tools/engine_cli/engine_cli.cpp
+)
+
+target_include_directories(engine_tests
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/order_gen
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/engine_cli
 )
 
 target_link_libraries(engine_tests

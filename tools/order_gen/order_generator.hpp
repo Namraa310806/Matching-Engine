@@ -8,6 +8,9 @@
 
 namespace tools {
 
+// Replay file format version
+constexpr uint32_t REPLAY_FORMAT_VERSION = 1;
+
 // Order action type for workload generation
 enum class OrderAction {
     SubmitLimit,
@@ -72,8 +75,14 @@ public:
     // Write workload to file (text format)
     bool write_to_file(const std::string& filename) const;
     
+    // Write replay file (versioned, self-contained format)
+    bool write_replay_file(const std::string& filename) const;
+    
     // Read workload from file
     static bool read_from_file(const std::string& filename, std::vector<WorkloadOrder>& orders);
+    
+    // Read replay file (with version checking)
+    static bool read_replay_file(const std::string& filename, std::vector<WorkloadOrder>& orders, uint32_t& version);
     
     // Get the generated orders
     const std::vector<WorkloadOrder>& orders() const { return orders_; }

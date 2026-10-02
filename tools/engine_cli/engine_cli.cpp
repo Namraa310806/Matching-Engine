@@ -12,19 +12,19 @@ bool EngineCLI::execute_workload(const std::string& filename) {
     orderbook_ = engine::OrderBook();
     stats_ = ExecutionStats();
     active_orders_.clear();
-    
+
     // Read workload
     std::vector<WorkloadOrder> orders;
     if (!OrderGenerator::read_from_file(filename, orders)) {
         std::cerr << "Failed to read workload file: " << filename << std::endl;
         return false;
     }
-    
+
     std::cout << "Executing " << orders.size() << " orders...\n";
-    
+
     // Start timing
     auto start_time = std::chrono::high_resolution_clock::now();
-    
+
     // Process each order
     for (const auto& workload_order : orders) {
         if (!process_order(workload_order)) {
@@ -33,24 +33,72 @@ bool EngineCLI::execute_workload(const std::string& filename) {
         }
         stats_.orders_processed++;
     }
-    
+
     // End timing
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
     stats_.execution_time_ms = duration.count() / 1000.0;
-    
+
     if (stats_.execution_time_ms > 0) {
         stats_.throughput_orders_per_sec = (stats_.orders_processed / stats_.execution_time_ms) * 1000.0;
     }
-    
+
     // Capture final book state
     stats_.final_bid_depth = orderbook_.buy_order_count();
     stats_.final_ask_depth = orderbook_.sell_order_count();
     stats_.final_bid_levels = orderbook_.buy_price_level_count();
     stats_.final_ask_levels = orderbook_.sell_price_level_count();
-    
+
     std::cout << "Execution completed.\n";
-    
+
+    return true;
+}
+
+bool EngineCLI::execute_replay(const std::string& filename) {
+    // Reset state
+    orderbook_ = engine::OrderBook();
+    stats_ = ExecutionStats();
+    active_orders_.clear();
+
+    // Read replay file with version checking
+    std::vector<WorkloadOrder> orders;
+    uint32_t version = 0;
+    if (!OrderGenerator::read_replay_file(filename, orders, version)) {
+        std::cerr << "Failed to read replay file: " << filename << std::endl;
+        return false;
+    }
+
+    std::cout << "Executing replay file (version " << version << ") with " << orders.size() << " orders...\n";
+
+    // Start timing
+    auto start_time = std::chrono::high_resolution_clock::now();
+
+    // Process each order
+    for (const auto& workload_order : orders) {
+        if (!process_order(workload_order)) {
+            std::cerr << "Failed to process order at sequence " << workload_order.sequence << std::endl;
+            return false;
+        }
+        stats_.orders_processed++;
+    }
+
+    // End timing
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+    stats_.execution_time_ms = duration.count() / 1000.0;
+
+    if (stats_.execution_time_ms > 0) {
+        stats_.throughput_orders_per_sec = (stats_.orders_processed / stats_.execution_time_ms) * 1000.0;
+    }
+
+    // Capture final book state
+    stats_.final_bid_depth = orderbook_.buy_order_count();
+    stats_.final_ask_depth = orderbook_.sell_order_count();
+    stats_.final_bid_levels = orderbook_.buy_price_level_count();
+    stats_.final_ask_levels = orderbook_.sell_price_level_count();
+
+    std::cout << "Replay execution completed.\n";
+
     return true;
 }
 
