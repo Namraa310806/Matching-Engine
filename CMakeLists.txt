@@ -76,9 +76,15 @@ target_compile_definitions(engine_tests
 include(GoogleTest)
 gtest_discover_tests(engine_tests)
 
-# Trivial benchmark
+# Benchmark suite
 add_executable(engine_benchmarks
     benchmarks/benchmark_main.cpp
+    tools/order_gen/order_generator.cpp
+)
+
+target_include_directories(engine_benchmarks
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/order_gen
 )
 
 target_link_libraries(engine_benchmarks
