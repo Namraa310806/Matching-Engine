@@ -321,3 +321,321 @@ V0 and V1 produce identical functional results for deterministic workloads. The 
 3. `tests/matching_test.cpp` - V0 correctness tests (unchanged)
 4. `tests/orderbook_test.cpp` - V0 order book tests (unchanged)
 5. `benchmarks/benchmark_main.cpp` - V0 benchmark suite (unchanged)
+
+---
+
+# Phase 4: Object Pool Optimization
+
+## Overview
+
+This phase implements an object pool (freelist) allocation strategy for order nodes to reduce dynamic allocation overhead on the hot path. The pool is implemented as a separate class (`OrderBookV1Pool`) that reuses the V1 data structures but replaces `new/delete` with a chunk-based object pool.
+
+## Hypothesis
+
+**Hypothesis**: Replacing `new OrderNode(...)` and `delete` with a chunk-based object pool with freelist recycling will improve performance by:
+1. Reducing heap allocation overhead (fewer calls to malloc/free)
+2. Improving cache locality (nodes allocated in contiguous chunks)
+3. Reducing memory fragmentation
+4. Providing deterministic allocation behavior
+
+**Expected improvement**: 10-30% throughput improvement, especially in workloads with high allocation/deallocation rates (add+cancel, mixed).
+
+## Implementation
+
+### Object Pool Design
+
+**Configuration**:
+- Initial chunk size: 1,024 nodes
+- Maximum chunk size: 65,536 nodes
+- Growth factor: 2.0x (exponential growth, capped)
+- Freelist enabled for recycling
+
+**Key features**:
+1. **Chunk-based allocation**: Pre-allocates chunks of raw memory (char buffers) to avoid repeated heap calls
+2. **Freelist recycling**: Returns freed nodes to a freelist for O(1) reuse
+3. **Exponential growth**: Chunk sizes grow exponentially (1K → 2K → 4K → 8K → 16K → 32K → 64K) up to max
+4. **Raw memory buffers**: Uses `std::vector<char>` for raw memory to avoid requiring default constructors
+5. **Placement new/destruct**: Caller responsible for construction/destruction via placement new and explicit destructor calls
+6. **Per-instance pool**: Each OrderBookV1Pool has its own pool (no global state, thread-local not needed for single-threaded benchmarks)
+
+**Allocation path**:
+```
+allocate()
+  ├─ if freelist not empty: pop from freelist (O(1), pool hit)
+  └─ else: allocate_from_chunks()
+      ├─ calculate next chunk size (exponential growth, capped)
+      ├─ allocate_chunk() -> new std::vector<char>
+      └─ return from freelist (O(1), pool miss)
+```
+
+**Deallocation path**:
+```
+deallocate(ptr)
+  └─ push to freelist (O(1))
+```
+
+**Pool statistics**:
+- `allocated_count`: Total allocations
+- `freed_count`: Total deallocations
+- `pool_hits`: Allocations from freelist
+- `pool_misses`: Allocations requiring new chunks
+- `chunk_count`: Number of chunks allocated
+- `total_capacity`: Total nodes across all chunks
+- `freelist_size`: Current freelist size
+
+### Integration
+
+**Baseline preserved**: `OrderBookV1` remains unchanged with `new/delete` allocation.
+
+**Pool version**: `OrderBookV1Pool` created as a separate class that:
+- Reuses `OrderNode` and `PriceLevel` definitions from `orderbook_v1.hpp`
+- Replaces `new OrderNode(...)` with `pool_.allocate()` + placement new
+- Replaces implicit destructor in `~OrderBookV1` with explicit `free_order_node()` + destructor call
+- Exposes `pool_stats()` for benchmarking
+
+**Files created**:
+1. `include/engine/object_pool.hpp` - Generic object pool template
+2. `include/engine/orderbook_v1_pool.hpp` - V1 with object pool
+3. `src/engine_v1_pool.cpp` - Implementation
+4. `benchmarks/benchmark_pool.cpp` - Baseline vs pool benchmarks
+5. `tests/orderbook_test_v1_pool.cpp` - Pool correctness tests
+6. `tests/matching_test_v1_pool.cpp` - Pool matching tests
+
+## Benchmark Results
+
+### Test Environment
+
+Same as Phase 4A (WSL, g++ 13.3.0, -O3 -march=native, Release build).
+
+### Workloads
+
+Same deterministic workloads as Phase 4A:
+1. Add-Only (100K orders)
+2. Add+Cancel (100K orders, 20% cancel rate)
+3. Add+Match (100K orders, crossing prices)
+4. Mixed (100K orders, 90% limit, 10% cancel)
+
+### Measurements
+
+5 repetitions per benchmark, CPU time and throughput.
+
+### Results Summary (100K orders)
+
+| Workload | Baseline (ops/sec) | Pool (ops/sec) | Improvement |
+|----------|-------------------|----------------|-------------|
+| Add-Only | 5.24M | 7.81M | **+49%** |
+| Add+Cancel | 5.26M | 7.26M | **+38%** |
+| Add+Match | 7.73M | 9.44M | **+22%** |
+| Mixed | 5.47M | 7.02M | **+28%** |
+
+### Detailed Results
+
+#### Add-Only Workload (100K orders)
+
+**Baseline**:
+- Mean: 19.27 ms (5.24M ops/sec)
+- Median: 18.69 ms (5.35M ops/sec)
+- StdDev: 2.16 ms (11.18% CV)
+
+**Pool**:
+- Mean: 12.67 ms (7.81M ops/sec)
+- Median: 12.27 ms (8.15M ops/sec)
+- StdDev: 1.02 ms (7.96% CV)
+
+**Improvement**: 49% faster mean, 43% faster median. Lower variance (7.96% vs 11.18% CV).
+
+#### Add+Cancel Workload (100K orders)
+
+**Baseline**:
+- Mean: 19.16 ms (5.26M ops/sec)
+- Median: 19.07 ms (5.24M ops/sec)
+- StdDev: 1.80 ms (9.41% CV)
+
+**Pool**:
+- Mean: 13.78 ms (7.26M ops/sec)
+- Median: 13.82 ms (7.23M ops/sec)
+- StdDev: 0.25 ms (1.84% CV)
+
+**Improvement**: 38% faster mean, 38% faster median. Significantly lower variance (1.84% vs 9.41% CV).
+
+#### Add+Match Workload (100K orders)
+
+**Baseline**:
+- Mean: 12.95 ms (7.73M ops/sec)
+- Median: 12.71 ms (7.87M ops/sec)
+- StdDev: 0.63 ms (4.83% CV)
+
+**Pool**:
+- Mean: 10.52 ms (9.44M ops/sec)
+- Median: 10.67 ms (9.37M ops/sec)
+- StdDev: 0.21 ms (2.02% CV)
+
+**Improvement**: 22% faster mean, 19% faster median. Lower variance (2.02% vs 4.83% CV).
+
+#### Mixed Workload (100K orders)
+
+**Baseline**:
+- Mean: 18.30 ms (5.47M ops/sec)
+- Median: 18.29 ms (5.47M ops/sec)
+- StdDev: 0.74 ms (4.04% CV)
+
+**Pool**:
+- Mean: 14.07 ms (7.02M ops/sec)
+- Median: 14.20 ms (7.04M ops/sec)
+- StdDev: 0.19 ms (1.36% CV)
+
+**Improvement**: 28% faster mean, 28% faster median. Significantly lower variance (1.36% vs 4.04% CV).
+
+### Pool Statistics (Mixed Workload, 100K orders)
+
+- Pool hits: 81,053
+- Pool misses: 5
+- Hit rate: 99.99%
+- Chunks: 6
+- Total capacity: 64,512 nodes
+
+**Interpretation**: The pool achieves near-perfect recycling (99.99% hit rate). Only 5 new chunk allocations were needed for 100K orders, indicating excellent reuse. The pool grew to 6 chunks with 64.5K total capacity, which is reasonable for the workload.
+
+## Analysis
+
+### Performance Improvement Confirmed
+
+The object pool provides meaningful, consistent performance improvements across all workloads:
+- **Add-Only**: +49% (largest improvement, pure allocation workload)
+- **Add+Cancel**: +38% (high allocation/deallocation rate)
+- **Add+Match**: +22% (moderate improvement, orders match immediately)
+- **Mixed**: +28% (realistic workload)
+
+### Variance Reduction
+
+The pool significantly reduces performance variance:
+- Add+Cancel: 9.41% → 1.84% CV (5x reduction)
+- Mixed: 4.04% → 1.36% CV (3x reduction)
+- Add-Only: 11.18% → 7.96% CV (1.4x reduction)
+- Add+Match: 4.83% → 2.02% CV (2.4x reduction)
+
+This indicates more predictable performance, which is valuable for production systems.
+
+### Hit Rate Analysis
+
+The 99.99% hit rate confirms that the freelist recycling is highly effective. The pool only needed 5 new chunk allocations for 100K orders, demonstrating that:
+1. The chunk growth strategy is appropriate (exponential growth with cap)
+2. The freelist recycling is working as intended
+3. The pool capacity (64.5K nodes) is sufficient for the workload
+
+### Complexity Acceptable
+
+The object pool adds:
+- ~200 lines of generic pool code (`object_pool.hpp`)
+- ~120 lines of pool integration (`orderbook_v1_pool.hpp`, `engine_v1_pool.cpp`)
+- Minimal complexity increase in hot path (freelist push/pop vs new/delete)
+
+The complexity is justified by the 22-49% performance improvement and variance reduction.
+
+### Comparison to Baseline V1
+
+Pool vs baseline V1 (new/delete):
+- Add-Only: 7.81M vs 5.24M (+49%)
+- Add+Cancel: 7.26M vs 5.26M (+38%)
+- Add+Match: 9.44M vs 7.73M (+22%)
+- Mixed: 7.02M vs 5.47M (+28%)
+
+The pool consistently outperforms the baseline V1 across all workloads.
+
+## Correctness Verification
+
+### Test Results
+
+**Pool correctness tests**: 56 tests passed
+- DomainTest: 23 tests
+- OrderBookTestV1Pool: 14 tests (includes pool statistics, identical-to-baseline comparison)
+- MatchingTestV1Pool: 12 tests (includes identical-to-baseline comparison)
+- ReplayTest: 6 tests
+
+**Baseline V1 correctness tests**: 122 tests passed (unchanged from Phase 4A)
+
+**Identical behavior**: Pool tests verify that `OrderBookV1Pool` produces identical results to `OrderBookV1` for the same operations (add, cancel, match).
+
+### Deterministic Behavior
+
+The pool behavior is deterministic:
+- Chunk growth follows a predictable exponential pattern (1K → 2K → 4K → 8K → 16K → 32K → 64K)
+- Freelist recycling is deterministic for a given sequence of operations
+- Pool statistics are reproducible across runs
+
+### Memory Safety
+
+- Raw memory buffers managed by `std::vector<char>` (automatic cleanup)
+- Placement new used for construction
+- Explicit destructor calls before returning to freelist
+- No memory leaks (verified by ASan in debug build)
+
+## Decision
+
+**Decision: RETAIN the object pool optimization.**
+
+**Rationale**:
+1. **Meaningful performance improvement**: 22-49% faster across all workloads
+2. **Consistent improvement**: No regressions observed
+3. **Variance reduction**: More predictable performance (1.4-5x lower CV)
+4. **Excellent hit rate**: 99.99% recycling efficiency
+5. **Acceptable complexity**: ~320 lines of additional code, minimal hot-path overhead
+6. **Correctness preserved**: All tests pass, identical behavior to baseline
+7. **Deterministic behavior**: Predictable chunk growth and recycling
+
+**Trade-offs acknowledged**:
+- Additional code complexity (~320 lines)
+- Slightly higher memory usage (chunks pre-allocated even if not fully used)
+- Requires explicit construction/destruction discipline (placement new, destructor calls)
+
+**Conclusion**: The performance benefits and variance reduction justify the added complexity. The object pool is a worthwhile optimization for production use.
+
+## Implementation Notes
+
+### Design Choices
+
+1. **Why raw memory buffers instead of `std::vector<T>`?**
+   - `OrderNode` lacks a default constructor
+   - Raw buffers avoid default construction overhead
+   - Caller controls construction via placement new
+
+2. **Why exponential growth with cap?**
+   - Balances memory efficiency with allocation overhead
+   - Prevents excessive memory growth (capped at 64K nodes per chunk)
+   - Works well for typical order book sizes
+
+3. **Why per-instance pool instead of global?**
+   - Avoids threading complexity (no lock contention)
+   - Simpler for single-threaded benchmarks
+   - Can be extended to thread-local if needed for multi-threading
+
+4. **Why freelist enabled by default?**
+   - Maximizes recycling efficiency (99.99% hit rate achieved)
+   - Can be disabled via config for linear allocation if needed
+
+### Potential Extensions
+
+1. **Thread-local pools**: For multi-threaded scenarios, each thread could have its own pool
+2. **Configurable growth**: Allow runtime configuration of chunk sizes and growth factor
+3. **Memory pooling**: Pool the chunks themselves for reuse across multiple order books
+4. **Statistics collection**: More detailed metrics (allocation latency, fragmentation, etc.)
+
+## Files Created
+
+1. `include/engine/object_pool.hpp` - Generic object pool template
+2. `include/engine/orderbook_v1_pool.hpp` - V1 with object pool
+3. `src/engine_v1_pool.cpp` - Pool implementation
+4. `benchmarks/benchmark_pool.cpp` - Baseline vs pool benchmarks
+5. `tests/orderbook_test_v1_pool.cpp` - Pool correctness tests
+6. `tests/matching_test_v1_pool.cpp` - Pool matching tests
+
+## Files Modified
+
+1. `CMakeLists.txt` - Added pool source files, pool test executable, pool benchmark executable
+
+## Files Unchanged
+
+1. `include/engine/orderbook_v1.hpp` - V1 baseline (unchanged)
+2. `src/engine_v1.cpp` - V1 baseline implementation (unchanged)
+3. `include/engine/orderbook.hpp` - V0 baseline (unchanged)
+4. `src/engine.cpp` - V0 baseline implementation (unchanged)
