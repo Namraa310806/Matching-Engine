@@ -19,6 +19,8 @@ Makefile
 *.dylib
 *.dll
 *.exe
+docs/benchmark_*.json
+docs/benchmark_output.txt
 
 # IDE
 .vscode/
