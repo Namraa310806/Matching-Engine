@@ -37,6 +37,7 @@ FetchContent_MakeAvailable(benchmark)
 add_library(engine_lib STATIC
     src/engine.cpp
     src/types.cpp
+    src/engine_v1.cpp
 )
 
 target_include_directories(engine_lib
@@ -76,7 +77,38 @@ target_compile_definitions(engine_tests
 include(GoogleTest)
 gtest_discover_tests(engine_tests)
 
-# Benchmark suite
+# engine_tests_v1 executable (v1 correctness tests)
+add_executable(engine_tests_v1
+    tests/test_main.cpp
+    tests/domain_test.cpp
+    tests/orderbook_test_v1.cpp
+    tests/matching_test_v1.cpp
+    tests/replay_test.cpp
+    tools/order_gen/order_generator.cpp
+    tools/engine_cli/engine_cli.cpp
+)
+
+target_include_directories(engine_tests_v1
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/order_gen
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/engine_cli
+)
+
+target_link_libraries(engine_tests_v1
+    PRIVATE
+        engine_lib
+        gtest
+        gtest_main
+)
+
+target_compile_definitions(engine_tests_v1
+    PRIVATE
+        TESTING
+)
+
+gtest_discover_tests(engine_tests_v1)
+
+# Benchmark suite (v0)
 add_executable(engine_benchmarks
     benchmarks/benchmark_main.cpp
     tools/order_gen/order_generator.cpp
@@ -88,6 +120,24 @@ target_include_directories(engine_benchmarks
 )
 
 target_link_libraries(engine_benchmarks
+    PRIVATE
+        engine_lib
+        benchmark::benchmark
+        benchmark::benchmark_main
+)
+
+# Benchmark suite (v1 comparison)
+add_executable(engine_benchmarks_v1
+    benchmarks/benchmark_v1.cpp
+    tools/order_gen/order_generator.cpp
+)
+
+target_include_directories(engine_benchmarks_v1
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/order_gen
+)
+
+target_link_libraries(engine_benchmarks_v1
     PRIVATE
         engine_lib
         benchmark::benchmark
