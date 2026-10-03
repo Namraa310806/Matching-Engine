@@ -59,8 +59,8 @@ std::pair<std::vector<Trade>, std::vector<MarketDataEvent>> MultiInstrumentEngin
     // Get or create the order book for this instrument
     OrderBookV1Pool* book = get_or_create_book(instrument_id);
 
-    // Generate a globally unique order ID
-    OrderId global_order_id = next_order_id();
+    // Use the provided order ID if non-zero, otherwise generate one
+    OrderId global_order_id = (order.id != 0) ? order.id : next_order_id();
 
     // Create a copy of the order with the global ID
     Order order_with_global_id = order;
@@ -71,6 +71,11 @@ std::pair<std::vector<Trade>, std::vector<MarketDataEvent>> MultiInstrumentEngin
 
     // Register the order in the routing index
     order_to_instrument_[global_order_id] = instrument_id;
+
+    // Update the next_order_id counter if we used a provided ID that's ahead
+    if (order.id != 0 && order.id >= next_order_id_) {
+        next_order_id_ = order.id + 1;
+    }
 
     // Wrap all trades and events with the instrument ID
     std::vector<Trade> wrapped_trades;

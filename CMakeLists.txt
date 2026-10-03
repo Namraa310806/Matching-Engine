@@ -208,6 +208,55 @@ target_compile_definitions(engine_tests_concurrency
 
 gtest_discover_tests(engine_tests_concurrency)
 
+# engine_tests_spsc_queue executable (SPSC queue tests)
+add_executable(engine_tests_spsc_queue
+    tests/test_main.cpp
+    tests/spsc_queue_test.cpp
+)
+
+target_link_libraries(engine_tests_spsc_queue
+    PRIVATE
+        engine_lib
+        gtest
+        gtest_main
+)
+
+target_compile_definitions(engine_tests_spsc_queue
+    PRIVATE
+        TESTING
+)
+
+gtest_discover_tests(engine_tests_spsc_queue)
+
+# engine_tests_spsc_integration executable (SPSC integration tests)
+add_executable(engine_tests_spsc_integration
+    tests/test_main.cpp
+    tests/domain_test.cpp
+    tests/spsc_integration_test.cpp
+    tools/order_gen/order_generator.cpp
+    tools/engine_cli/engine_cli.cpp
+)
+
+target_include_directories(engine_tests_spsc_integration
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/order_gen
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/engine_cli
+)
+
+target_link_libraries(engine_tests_spsc_integration
+    PRIVATE
+        engine_lib
+        gtest
+        gtest_main
+)
+
+target_compile_definitions(engine_tests_spsc_integration
+    PRIVATE
+        TESTING
+)
+
+gtest_discover_tests(engine_tests_spsc_integration)
+
 # Benchmark suite (v0)
 add_executable(engine_benchmarks
     benchmarks/benchmark_main.cpp
@@ -292,6 +341,24 @@ target_include_directories(engine_benchmarks_concurrency
 )
 
 target_link_libraries(engine_benchmarks_concurrency
+    PRIVATE
+        engine_lib
+        benchmark::benchmark
+        benchmark::benchmark_main
+)
+
+# Benchmark suite (SPSC ingestion comparison)
+add_executable(engine_benchmarks_spsc
+    benchmarks/benchmark_spsc.cpp
+    tools/order_gen/order_generator.cpp
+)
+
+target_include_directories(engine_benchmarks_spsc
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/order_gen
+)
+
+target_link_libraries(engine_benchmarks_spsc
     PRIVATE
         engine_lib
         benchmark::benchmark

@@ -441,6 +441,268 @@ matching-engine/
 
 ### Index Consistency Invariants
 - **Index completeness**: Every resting order in book must be in index
+- **Index accuracy**: Every entry in index must correspond to a resting order in book
+- **Index size**: Index size must equal total resting order count
+
+## Mutex Concurrency Baseline (Phase 5B)
+
+### Architecture
+- **Decision**: Use global mutex to protect all shared mutable state
+- **Implementation**: `MutexMultiInstrumentEngine` wraps `MultiInstrumentEngine` with `std::mutex`
+- **Rationale**: Establishes a simple, measurable baseline for lock contention overhead
+- **Trade-offs**: Coarse-grained locking serializes all operations, even independent instruments
+
+### Protected State
+The mutex protects:
+- Instrument-to-book map (`std::unordered_map<InstrumentId, std::unique_ptr<OrderBookV1Pool>>`)
+- Order routing index (`std::unordered_map<OrderId, InstrumentId>`)
+- Global order ID counter (`OrderId next_order_id_`)
+- Access to individual order books
+
+### Global Order ID Generation
+- **Decision**: Use mutex-protected increment for order ID generation
+- **Rationale**: Simple and correct for baseline, no atomics needed
+- **Trade-offs**: Lock contention on every order submission (acceptable for baseline)
+
+### Contention Model
+- **Single-threaded**: ~8% overhead from lock acquisition/release
+- **Multi-threaded**: 2-4x slower due to mutex contention and thread overhead
+- **Bottleneck**: Global mutex serializes all operations regardless of instrument distribution
+
+## SPSC Ingestion Architecture (Phase 5)
+
+### Architecture Overview
+- **Decision**: Single-producer, single-consumer queue for order ingestion
+- **Implementation**: `SpscMultiInstrumentEngine` with `SpscQueue<IngestionCommand, Capacity>`
+- **Key Invariant**: ONLY the matching-engine consumer thread directly mutates order-book state
+- **Rationale**: Eliminates lock contention by establishing single-writer ownership of book state
+
+### Thread Roles
+```
+Producer thread
+    ->
+SPSC ring buffer (fixed capacity, power-of-two)
+    ->
+Single matching-engine thread (consumer)
+    ->
+Owns MultiInstrumentEngine (sole writer of order-book state)
+```
+
+### Producer Responsibilities
+- Construct ingestion commands (SubmitLimitOrderCmd, SubmitMarketOrderCmd, CancelOrderCmd)
+- Enqueue commands to SPSC queue
+- Never directly call matching/book mutation functions
+- Owns the write position in the queue exclusively
+
+### Consumer Responsibilities
+- Dequeue commands from SPSC queue
+- Process commands by invoking the underlying `MultiInstrumentEngine`
+- Owns the read position in the queue exclusively
+- **Sole writer** of all order-book state
+
+### SPSC Queue Design
+
+#### Data Structure
+- **Implementation**: Ring buffer with power-of-two capacity
+- **Storage**: Pre-allocated array with placement new for construction
+- **Capacity**: Fixed at compile time (template parameter), power-of-two preferred
+- **Indexing**: Bitmask wraparound (capacity - 1) for efficiency
+
+#### Ownership Model
+- **Producer-owned state**: `write_index_` (only producer modifies)
+- **Consumer-owned state**: `read_index_` (only consumer modifies)
+- **Shared mutable state**: Ring buffer data (synchronized via acquire/release)
+- **No mutex**: No locking primitives inside the queue
+- **No condition_variable**: No waiting primitives inside the queue
+
+#### Memory Ordering
+
+##### Producer Enqueue
+```cpp
+bool enqueue(const T& value) {
+    const size_t current_write = write_index_.load(std::memory_order_relaxed);
+    const size_t next_write = (current_write + 1) & mask_;
+
+    // Check if queue is full
+    const size_t current_read = read_index_.load(std::memory_order_relaxed);
+    if (next_write == current_read) {
+        return false; // Queue is full
+    }
+
+    // Write the value
+    new (&buffer_[current_write]) T(value);
+
+    // Publish write position with release semantics
+    write_index_.store(next_write, std::memory_order_release);
+
+    return true;
+}
+```
+
+**Memory ordering rationale for enqueue:**
+- `load(read_index_)` with **relaxed**: Producer only needs to know if there's space. No synchronization needed with consumer's reads because the producer only cares about the current value, not establishing a happens-before relationship.
+- `store write_index_` with **release**: Critical for correctness. This release operation synchronizes with the consumer's acquire load. All writes to `buffer_[current_write]` happen-before this store, ensuring the value is fully constructed before the consumer sees the updated write index.
+
+##### Consumer Dequeue
+```cpp
+bool dequeue(T& value) {
+    const size_t current_read = read_index_.load(std::memory_order_relaxed);
+
+    // Check if queue is empty
+    const size_t current_write = write_index_.load(std::memory_order_acquire);
+    if (current_read == current_write) {
+        return false; // Queue is empty
+    }
+
+    // Read the value
+    value = std::move(buffer_[current_read]);
+
+    // Destroy the old value
+    buffer_[current_read].~T();
+
+    // Update read position
+    const size_t next_read = (current_read + 1) & mask_;
+    read_index_.store(next_read, std::memory_order_relaxed);
+
+    return true;
+}
+```
+
+**Memory ordering rationale for dequeue:**
+- `load(write_index_)` with **acquire**: Critical for correctness. This acquire operation synchronizes with the producer's release store. It ensures all writes to the value (from the producer) happen-before this load, so the consumer sees a fully constructed value.
+- `store read_index_` with **relaxed**: Consumer owns this index exclusively. No synchronization needed because the producer only reads it with relaxed ordering to check for full condition.
+
+##### Why Not seq_cst?
+- **Unnecessary overhead**: `memory_order_seq_cst` provides a total ordering across all atomic operations, which is stronger than needed for SPSC.
+- **Sufficient with acquire/release**: The acquire/release pair establishes the required happens-before relationship between producer's data publication and consumer's data consumption.
+- **Performance**: Acquire/release is typically faster than seq_cst on most architectures.
+
+##### Why Relaxed for Some Operations?
+- **Single-writer indices**: Both `write_index_` and `read_index_` are modified by only one thread each.
+- **Full/empty checks**: When checking if the queue is full (producer) or empty (consumer), we only need the current value, not a synchronized view.
+- **No data race**: The producer never modifies `read_index_`, and the consumer never modifies `write_index_`, so relaxed reads are safe.
+
+#### Happens-Before Relationship
+The critical synchronization point:
+1. Producer constructs value in `buffer_[current_write]`
+2. Producer calls `write_index_.store(next_write, std::memory_order_release)`
+3. **happens-before**: The store-release synchronizes with...
+4. Consumer calls `write_index_.load(std::memory_order_acquire)`
+5. Consumer reads value from `buffer_[current_read]`
+
+This ensures that the consumer cannot see the updated write index until after the value is fully constructed and stored in the buffer.
+
+#### Publication of Queue Data
+- **Producer writes**: Value construction in buffer happens-before release store of write index
+- **Consumer reads**: Acquire load of write index synchronizes with producer's release store
+- **Result**: Consumer sees fully constructed values, no data races on buffer data
+
+#### Consumer Progress Visibility
+- **Consumer updates**: Consumer updates `read_index_` with relaxed store
+- **Producer reads**: Producer reads `read_index_` with relaxed load to check for full condition
+- **Visibility**: Relaxed is sufficient because producer only needs an approximate view to check for available space. If the producer overestimates (thinks queue is full when it's not), it will retry and succeed on the next attempt.
+
+### Ingestion Command Design
+
+#### Command Types
+- **SubmitLimitOrderCmd**: Instrument ID + Order (side, price, quantity, sequence)
+- **SubmitMarketOrderCmd**: Instrument ID + Order (side, quantity, sequence; price ignored)
+- **CancelOrderCmd**: Order ID to cancel
+
+#### Design Rationale
+- **Type-safe encoding**: `std::variant` ensures only valid command types
+- **No synchronization primitives**: Commands are plain data structures
+- **Trivially movable**: Efficient transfer through queue (move semantics)
+- **Self-contained**: All necessary information for matching engine processing
+- **No external references**: Commands own their data, no lifetime issues
+
+#### Ownership and Lifetime
+- **Producer**: Constructs commands and enqueues them (move or copy)
+- **Queue**: Transfers commands via move semantics when possible
+- **Consumer**: Dequeues commands and processes them
+- **No dangling references**: Commands are value types, no pointers to external state
+
+### Matching Thread Ownership
+
+#### Architectural Invariant
+**ONLY the matching-engine consumer thread directly mutates order-book state.**
+
+This invariant is critical for:
+- **No lock contention**: Single-writer ownership eliminates the need for locks on book state
+- **Clear ownership boundary**: Producer and consumer have distinct responsibilities
+- **Correctness**: Prevents concurrent modification of book state
+
+#### Producer Boundary
+- Producer **cannot** call `MultiInstrumentEngine::submit_order()` directly
+- Producer **cannot** call `MultiInstrumentEngine::cancel_order()` directly
+- Producer **must** construct ingestion commands and enqueue them
+- Producer **owns** the queue's write position exclusively
+
+#### Consumer Boundary
+- Consumer **owns** the `MultiInstrumentEngine` instance
+- Consumer **owns** the queue's read position exclusively
+- Consumer **only** mutates book state after dequeuing commands
+- Consumer **processes** commands by invoking the engine
+
+#### Enforcement
+- **API design**: `SpscMultiInstrumentEngine` only exposes `submit_order()` and `cancel_order()` which enqueue commands
+- **No direct access**: Underlying `MultiInstrumentEngine` is private (except test-only access)
+- **Documentation**: Ownership invariant is clearly documented
+
+### Capacity and Backpressure
+
+#### Fixed Capacity
+- **Decision**: Fixed-capacity queue, no dynamic resizing
+- **Rationale**: Simpler implementation, predictable memory usage, no allocation during operation
+- **Trade-offs**: Producer must handle full queue (backpressure)
+
+#### Full Queue Behavior
+- **Enqueue returns false**: Producer must retry or handle backpressure
+- **No blocking**: Queue does not block or wait when full
+- **Producer responsibility**: Implement retry logic or rate limiting if needed
+
+#### Empty Queue Behavior
+- **Dequeue returns false**: Consumer yields and retries
+- **Busy-spin avoidance**: Consumer calls `std::this_thread::yield()` when empty
+- **No blocking**: Queue does not block or wait when empty
+
+### Non-Goals (Current Phase)
+- No MPMC queues (multi-producer, multi-consumer)
+- No per-instrument lock-free queues
+- No dynamic queue resizing
+- No networking or external market feeds
+- No hazard pointers or RCU
+- No custom allocators for queue
+- No NUMA optimization
+- No cache-line padding optimization (beyond correctness)
+- No kernel-bypass networking
+- No io_uring integration
+
+### Comparison with Mutex Baseline
+
+#### Expected Characteristics
+- **Throughput**: SPSC may have higher throughput by eliminating lock contention
+- **Latency**: SPSC may have lower tail latency by avoiding blocking on mutex
+- **Contention**: SPSC eliminates producer-side contention (single producer)
+- **Bottleneck**: SPSC shifts bottleneck to single matching thread (intentional)
+
+#### Trade-offs
+- **Single writer**: SPSC limits ingestion to one producer thread
+- **Queue capacity**: Fixed capacity requires backpressure handling
+- **Asynchronous API**: Producer does not get immediate trades/events (processed by consumer)
+- **Complexity**: SPSC requires additional thread management and queue implementation
+
+#### When SPSC is Advantageous
+- High contention scenarios where mutex baseline slows down significantly
+- Workloads where single producer is sufficient
+- Scenarios where asynchronous processing is acceptable
+- Systems that can tolerate queue capacity limits
+
+#### When Mutex May Be Preferable
+- Multiple producer threads needed
+- Synchronous API required (immediate trades/events)
+- Simple implementation priority over performance
+- Low contention scenarios where mutex overhead is negligible
 - **Index accuracy**: Every index entry must point to valid order location
 - **Index size**: Must equal total resting order count
 - **No stale entries**: Filled/cancelled orders removed from index

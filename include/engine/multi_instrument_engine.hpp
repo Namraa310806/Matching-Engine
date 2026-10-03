@@ -19,6 +19,8 @@ public:
 
     // Submit an order to a specific instrument
     // Returns trades and market data events
+    // If order.id is 0, the engine assigns a globally unique ID
+    // If order.id is non-zero, the engine uses that ID (must be unique)
     std::pair<std::vector<Trade>, std::vector<MarketDataEvent>> submit_order(
         const InstrumentId& instrument_id,
         const Order& order
