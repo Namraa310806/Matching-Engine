@@ -86,7 +86,7 @@ TEST(DomainTest, OrderValidationFilledEqualsQuantity) {
 }
 
 TEST(DomainTest, TradeConstructionValid) {
-    Trade trade(1, 2, 100, 500, 42);
+    Trade trade("", 1, 2, 100, 500, 42);
     EXPECT_EQ(trade.buy_order_id, 1);
     EXPECT_EQ(trade.sell_order_id, 2);
     EXPECT_EQ(trade.execution_price, 100);
@@ -104,15 +104,15 @@ TEST(DomainTest, TradeDefaultConstruction) {
 }
 
 TEST(DomainTest, TradeValidationZeroQuantity) {
-    EXPECT_THROW(Trade(1, 2, 100, 0, 42), std::invalid_argument);
+    EXPECT_THROW(Trade("", 1, 2, 100, 0, 42), std::invalid_argument);
 }
 
 TEST(DomainTest, TradeValidationNegativePrice) {
-    EXPECT_THROW(Trade(1, 2, -1, 500, 42), std::invalid_argument);
+    EXPECT_THROW(Trade("", 1, 2, -1, 500, 42), std::invalid_argument);
 }
 
 TEST(DomainTest, MarketDataEventConstructionOrderAdded) {
-    MarketDataEvent event(1, Side::Buy, 100, 1000, 0, MarketDataEventType::OrderAdded, 42);
+    MarketDataEvent event("", 1, Side::Buy, 100, 1000, 0, MarketDataEventType::OrderAdded, 42);
     EXPECT_EQ(event.order_id, 1);
     EXPECT_EQ(event.side, Side::Buy);
     EXPECT_EQ(event.price, 100);
@@ -123,18 +123,18 @@ TEST(DomainTest, MarketDataEventConstructionOrderAdded) {
 }
 
 TEST(DomainTest, MarketDataEventConstructionOrderCancelled) {
-    MarketDataEvent event(1, Side::Sell, 100, 1000, 0, MarketDataEventType::OrderCancelled, 43);
+    MarketDataEvent event("", 1, Side::Sell, 100, 1000, 0, MarketDataEventType::OrderCancelled, 43);
     EXPECT_EQ(event.event_type, MarketDataEventType::OrderCancelled);
 }
 
 TEST(DomainTest, MarketDataEventConstructionOrderPartiallyFilled) {
-    MarketDataEvent event(1, Side::Buy, 100, 1000, 300, MarketDataEventType::OrderPartiallyFilled, 44);
+    MarketDataEvent event("", 1, Side::Buy, 100, 1000, 300, MarketDataEventType::OrderPartiallyFilled, 44);
     EXPECT_EQ(event.event_type, MarketDataEventType::OrderPartiallyFilled);
     EXPECT_EQ(event.filled, 300);
 }
 
 TEST(DomainTest, MarketDataEventConstructionOrderFullyFilled) {
-    MarketDataEvent event(1, Side::Sell, 100, 1000, 1000, MarketDataEventType::OrderFullyFilled, 45);
+    MarketDataEvent event("", 1, Side::Sell, 100, 1000, 1000, MarketDataEventType::OrderFullyFilled, 45);
     EXPECT_EQ(event.event_type, MarketDataEventType::OrderFullyFilled);
     EXPECT_EQ(event.filled, 1000);
 }
@@ -151,11 +151,11 @@ TEST(DomainTest, MarketDataEventDefaultConstruction) {
 }
 
 TEST(DomainTest, MarketDataEventValidationZeroQuantity) {
-    EXPECT_THROW(MarketDataEvent(1, Side::Buy, 100, 0, 0, MarketDataEventType::OrderAdded, 42), std::invalid_argument);
+    EXPECT_THROW(MarketDataEvent("", 1, Side::Buy, 100, 0, 0, MarketDataEventType::OrderAdded, 42), std::invalid_argument);
 }
 
 TEST(DomainTest, MarketDataEventValidationFilledExceedsQuantity) {
-    EXPECT_THROW(MarketDataEvent(1, Side::Buy, 100, 1000, 1500, MarketDataEventType::OrderAdded, 42), std::invalid_argument);
+    EXPECT_THROW(MarketDataEvent("", 1, Side::Buy, 100, 1000, 1500, MarketDataEventType::OrderAdded, 42), std::invalid_argument);
 }
 
 TEST(DomainTest, TypeAliases) {

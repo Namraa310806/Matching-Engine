@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <stdexcept>
+#include <string>
 
 namespace engine {
 
@@ -9,6 +10,9 @@ namespace engine {
 using OrderId = uint64_t;
 using Price = int64_t;
 using Qty = uint64_t;
+
+// Instrument identifier
+using InstrumentId = std::string;
 
 // Order side
 enum class Side {
@@ -93,14 +97,16 @@ struct Order {
 
 // Trade event
 struct Trade {
+    InstrumentId instrument_id;
     OrderId buy_order_id;
     OrderId sell_order_id;
     Price execution_price;
     Qty execution_quantity;
     uint64_t sequence;
 
-    Trade(OrderId buy_id, OrderId sell_id, Price price, Qty qty, uint64_t seq)
-        : buy_order_id(buy_id)
+    Trade(const InstrumentId& inst_id, OrderId buy_id, OrderId sell_id, Price price, Qty qty, uint64_t seq)
+        : instrument_id(inst_id)
+        , buy_order_id(buy_id)
         , sell_order_id(sell_id)
         , execution_price(price)
         , execution_quantity(qty)
@@ -134,6 +140,7 @@ enum class MarketDataEventType {
 
 // Market data event
 struct MarketDataEvent {
+    InstrumentId instrument_id;
     OrderId order_id;
     Side side;
     Price price;
@@ -142,8 +149,9 @@ struct MarketDataEvent {
     MarketDataEventType event_type;
     uint64_t sequence;
 
-    MarketDataEvent(OrderId id, Side s, Price p, Qty qty, Qty f, MarketDataEventType type, uint64_t seq)
-        : order_id(id)
+    MarketDataEvent(const InstrumentId& inst_id, OrderId id, Side s, Price p, Qty qty, Qty f, MarketDataEventType type, uint64_t seq)
+        : instrument_id(inst_id)
+        , order_id(id)
         , side(s)
         , price(p)
         , quantity(qty)

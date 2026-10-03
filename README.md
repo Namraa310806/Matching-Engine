@@ -9,8 +9,16 @@ This project aims to build a production-grade matching engine from scratch, focu
 - Efficient order matching algorithms
 - Low-latency execution
 - Memory-efficient implementations
+- Multi-instrument support
 
-**Note**: This is currently a skeleton project. The matching engine implementation has not yet been added.
+## Implementation Versions
+
+The project includes multiple implementation versions for performance comparison:
+
+- **V0**: Reference implementation using `std::map` + `std::deque`
+- **V1**: Cache-friendly implementation using sorted `std::vector` + intrusive linked lists
+- **V1 + Object Pool**: V1 with object pooling for order node allocation (Phase 4 optimized version)
+- **Multi-Instrument Engine**: Multi-instrument orchestration layer using V1 + Object Pool (Phase 5A)
 
 ## Requirements
 

@@ -77,7 +77,7 @@ std::pair<std::vector<Trade>, std::vector<MarketDataEvent>> OrderBook::match_buy
             Qty trade_qty = std::min(order.remaining(), resting_order.remaining());
 
             // Create trade event
-            Trade trade(order.id, resting_order.id, best_ask, trade_qty, ++sequence_);
+            Trade trade("", order.id, resting_order.id, best_ask, trade_qty, ++sequence_);
             trades.push_back(trade);
 
             // Update filled quantities
@@ -139,7 +139,7 @@ std::pair<std::vector<Trade>, std::vector<MarketDataEvent>> OrderBook::match_sel
             Qty trade_qty = std::min(order.remaining(), resting_order.remaining());
 
             // Create trade event
-            Trade trade(resting_order.id, order.id, best_bid, trade_qty, ++sequence_);
+            Trade trade("", resting_order.id, order.id, best_bid, trade_qty, ++sequence_);
             trades.push_back(trade);
 
             // Update filled quantities
@@ -194,6 +194,7 @@ void OrderBook::add_resting_order(const Order& order) {
 
 MarketDataEvent OrderBook::create_order_event(const Order& order, MarketDataEventType type) const {
     return MarketDataEvent(
+        "",
         order.id,
         order.side,
         order.price,

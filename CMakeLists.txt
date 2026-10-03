@@ -39,6 +39,7 @@ add_library(engine_lib STATIC
     src/types.cpp
     src/engine_v1.cpp
     src/engine_v1_pool.cpp
+    src/multi_instrument_engine.cpp
 )
 
 target_include_directories(engine_lib
@@ -140,6 +141,35 @@ target_compile_definitions(engine_tests_v1_pool
 
 gtest_discover_tests(engine_tests_v1_pool)
 
+# engine_tests_multi_instrument executable (multi-instrument correctness tests)
+add_executable(engine_tests_multi_instrument
+    tests/test_main.cpp
+    tests/domain_test.cpp
+    tests/multi_instrument_test.cpp
+    tools/order_gen/order_generator.cpp
+    tools/engine_cli/engine_cli.cpp
+)
+
+target_include_directories(engine_tests_multi_instrument
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/order_gen
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/engine_cli
+)
+
+target_link_libraries(engine_tests_multi_instrument
+    PRIVATE
+        engine_lib
+        gtest
+        gtest_main
+)
+
+target_compile_definitions(engine_tests_multi_instrument
+    PRIVATE
+        TESTING
+)
+
+gtest_discover_tests(engine_tests_multi_instrument)
+
 # Benchmark suite (v0)
 add_executable(engine_benchmarks
     benchmarks/benchmark_main.cpp
@@ -188,6 +218,24 @@ target_include_directories(engine_benchmarks_pool
 )
 
 target_link_libraries(engine_benchmarks_pool
+    PRIVATE
+        engine_lib
+        benchmark::benchmark
+        benchmark::benchmark_main
+)
+
+# Benchmark suite (multi-instrument comparison)
+add_executable(engine_benchmarks_multi
+    benchmarks/benchmark_multi.cpp
+    tools/order_gen/order_generator.cpp
+)
+
+target_include_directories(engine_benchmarks_multi
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/order_gen
+)
+
+target_link_libraries(engine_benchmarks_multi
     PRIVATE
         engine_lib
         benchmark::benchmark
