@@ -2,6 +2,7 @@
 build/
 build-*/
 build-ci/
+build_*/
 
 # Build logs
 *.log

@@ -7,6 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Build configurations
 set(CMAKE_CXX_FLAGS_DEBUG "-O2 -Wall -Wextra -Wpedantic -fsanitize=address,undefined" CACHE STRING "" FORCE)
+set(CMAKE_CXX_FLAGS_TSAN "-O2 -Wall -Wextra -Wpedantic -fsanitize=thread" CACHE STRING "" FORCE)
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native -DNDEBUG" CACHE STRING "" FORCE)
 
 # Enable testing
@@ -40,11 +41,19 @@ add_library(engine_lib STATIC
     src/engine_v1.cpp
     src/engine_v1_pool.cpp
     src/multi_instrument_engine.cpp
+    src/mutex_multi_instrument_engine.cpp
 )
 
 target_include_directories(engine_lib
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+)
+
+# Link threads library for std::mutex/std::thread support
+find_package(Threads REQUIRED)
+target_link_libraries(engine_lib
+    PUBLIC
+        Threads::Threads
 )
 
 # engine_tests executable
@@ -170,6 +179,35 @@ target_compile_definitions(engine_tests_multi_instrument
 
 gtest_discover_tests(engine_tests_multi_instrument)
 
+# engine_tests_concurrency executable (mutex concurrency tests)
+add_executable(engine_tests_concurrency
+    tests/test_main.cpp
+    tests/domain_test.cpp
+    tests/concurrency_test.cpp
+    tools/order_gen/order_generator.cpp
+    tools/engine_cli/engine_cli.cpp
+)
+
+target_include_directories(engine_tests_concurrency
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/order_gen
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/engine_cli
+)
+
+target_link_libraries(engine_tests_concurrency
+    PRIVATE
+        engine_lib
+        gtest
+        gtest_main
+)
+
+target_compile_definitions(engine_tests_concurrency
+    PRIVATE
+        TESTING
+)
+
+gtest_discover_tests(engine_tests_concurrency)
+
 # Benchmark suite (v0)
 add_executable(engine_benchmarks
     benchmarks/benchmark_main.cpp
@@ -236,6 +274,24 @@ target_include_directories(engine_benchmarks_multi
 )
 
 target_link_libraries(engine_benchmarks_multi
+    PRIVATE
+        engine_lib
+        benchmark::benchmark
+        benchmark::benchmark_main
+)
+
+# Benchmark suite (mutex concurrency baseline)
+add_executable(engine_benchmarks_concurrency
+    benchmarks/benchmark_concurrency.cpp
+    tools/order_gen/order_generator.cpp
+)
+
+target_include_directories(engine_benchmarks_concurrency
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/order_gen
+)
+
+target_link_libraries(engine_benchmarks_concurrency
     PRIVATE
         engine_lib
         benchmark::benchmark

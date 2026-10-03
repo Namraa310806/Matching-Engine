@@ -329,7 +329,7 @@ Establish routing overhead by comparing:
 ## Future Work (Out of Scope for Phase 5A)
 
 The following are explicitly deferred to later phases:
-- Mutexes and thread safety
+- Mutexes and thread safety (implemented in Phase 5B)
 - Thread pools for parallel matching
 - Atomics for shared state
 - SPSC queues for order routing
@@ -338,6 +338,52 @@ The following are explicitly deferred to later phases:
 - External market feeds
 - Exchange connectivity
 - Phase 6 micro-optimizations
+
+## Phase 5B: Mutex Concurrency Baseline
+
+Phase 5B adds a mutex-protected wrapper (`MutexMultiInstrumentEngine`) that provides thread-safe concurrent access to the multi-instrument engine. Key characteristics:
+
+- **Global mutex**: Single `std::mutex` protects all shared state
+- **API preservation**: Same interface as single-threaded engine
+- **No atomics**: Mutex provides all synchronization (no `std::atomic` in this phase)
+- **Baseline purpose**: Establishes measurable contention characteristics for comparison with Phase 5C's lock-free architecture
+
+### Architecture (Phase 5B)
+
+```
+Multiple producer threads
+        |
+        v
+   global mutex (std::mutex)
+        |
+        v
+MutexMultiInstrumentEngine (wrapper)
+        |
+        v
+MultiInstrumentEngine (single-threaded)
+        |
+        +-- Instrument A -> OrderBookV1Pool
+        +-- Instrument B -> OrderBookV1Pool
+        +-- Instrument C -> OrderBookV1Pool
+```
+
+### Critical Section
+The mutex protects:
+- Instrument-to-book map
+- Order routing index (OrderId -> InstrumentId)
+- Global order ID generation
+- Access to individual order books
+
+### Benchmark Results Summary (100,000 orders, wall time)
+- Single-threaded baseline: 1.60M ops/sec (62.6 ms)
+- Mutex 1 thread: 1.46M ops/sec (68.3 ms) - 8% slower
+- Mutex 2 threads: 394K ops/sec (253.8 ms) - 4x slower
+- Mutex 4 threads: 459K ops/sec (217.9 ms) - 3.5x slower
+- Mutex 8 threads: 1.16M ops/sec (86.4 ms) - 1.4x slower
+
+The global mutex serializes all operations, making multi-threaded execution slower than single-threaded due to contention and thread overhead.
+
+See `docs/MUTEX_CONCURRENCY_BASELINE.md` for detailed analysis.
 
 ## Summary
 
@@ -348,3 +394,9 @@ Phase 5A establishes a clean, correct multi-instrument architecture:
 - Global order ID uniqueness
 - Minimal overhead over single-instrument baseline
 - Foundation for future concurrency work
+
+Phase 5B adds a mutex concurrency baseline:
+- **Global mutex** protection for thread-safe concurrent access
+- Measurable contention characteristics
+- Clean separation from single-threaded implementation
+- Foundation for Phase 5C's lock-free/SPSC architecture comparison
