@@ -298,13 +298,14 @@ Phase 5 successfully implements a clean SPSC ingestion architecture. The impleme
 - Eliminates lock contention on book state
 - Provides a lock-free ingestion path with acquire/release memory ordering
 - Maintains all matching semantics and correctness invariants
-- Provides a fair performance comparison with mutex baseline
+
+**CRITICAL BENCHMARK CORRECTION (2026-10-04)**: Previous benchmark results claiming 8.0x speedup over mutex baseline were INVALID due to a critical bug: the benchmark silently dropped commands when the queue was full instead of applying backpressure. With the corrected benchmark that properly applies backpressure and verifies all commands are processed, SPSC is actually SLOWER than the mutex baseline (0.51x speedup in corrected Release benchmarks).
 
 The SPSC architecture provides a clear alternative to the mutex baseline, with:
-- **Demonstrated higher throughput** (8.0x speedup in Phase 7 Release benchmarks; 9-26x in Phase 5C DEBUG benchmarks)
-- Potential for lower tail latency (no blocking on mutex)
+- **Corrected throughput** (0.51x vs mutex in corrected Release benchmarks - SPSC is slower)
+- Potential for lower tail latency (no blocking on mutex) - not yet measured
 - Single-writer invariant (clear ownership boundary)
 - Fixed capacity (predictable memory usage)
 - Order ID return from submit_order (enables cancellations in async API)
 
-**Benchmark Results**: SPSC shows significant throughput advantage over mutex and single-threaded baselines when processing equivalent workloads including actual cancellations. See `SPSC_CORRECTNESS_AUDIT.md` and `docs/RESULTS.md` for detailed analysis and performance results.
+**Benchmark Results**: See `SPSC_CORRECTNESS_AUDIT.md` and `docs/RESULTS.md` for detailed analysis of the benchmark bug and corrected results.

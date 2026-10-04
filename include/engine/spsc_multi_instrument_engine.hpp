@@ -86,6 +86,9 @@ public:
     // Get current queue size (approximate, from producer perspective)
     size_t queue_size() const;
 
+    // Get number of commands processed by consumer (thread-safe)
+    uint64_t processed_command_count() const;
+
     // WARNING: Query methods are NOT thread-safe
     // They should only be called when the producer is stopped
     // These methods directly access the underlying MultiInstrumentEngine
@@ -133,6 +136,9 @@ private:
     // Producer assigns IDs to enable cancellations in async API
     // Consumer uses these IDs directly, preserving global uniqueness
     std::atomic<OrderId> next_order_id_{1};
+
+    // Counter for commands processed by consumer (for benchmark verification)
+    std::atomic<uint64_t> processed_command_count_{0};
 };
 
 // Template implementation (must be in header for templates)
@@ -166,6 +172,11 @@ bool SpscMultiInstrumentEngine<QueueCapacity>::is_running() const {
 template<size_t QueueCapacity>
 size_t SpscMultiInstrumentEngine<QueueCapacity>::queue_size() const {
     return queue_.size();
+}
+
+template<size_t QueueCapacity>
+uint64_t SpscMultiInstrumentEngine<QueueCapacity>::processed_command_count() const {
+    return processed_command_count_.load(std::memory_order_relaxed);
 }
 
 template<size_t QueueCapacity>
@@ -211,6 +222,7 @@ void SpscMultiInstrumentEngine<QueueCapacity>::matching_thread_loop() {
         IngestionCommand cmd;
         if (queue_.dequeue(cmd)) {
             process_command(cmd);
+            processed_command_count_.fetch_add(1, std::memory_order_relaxed);
         } else {
             // Queue is empty, yield briefly to avoid busy-spin
             std::this_thread::yield();
@@ -221,6 +233,7 @@ void SpscMultiInstrumentEngine<QueueCapacity>::matching_thread_loop() {
     IngestionCommand cmd;
     while (queue_.dequeue(cmd)) {
         process_command(cmd);
+        processed_command_count_.fetch_add(1, std::memory_order_relaxed);
     }
 }
 

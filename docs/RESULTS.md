@@ -164,17 +164,30 @@ Global mutex serializes all operations, making multi-threaded execution slower t
 | 32,768 | 5.15M | 197K | 156K | **26.1x** | 33.0x |
 | 100,000 | 4.99M | 197K | 200K | **25.3x** | 25.0x |
 
-### Phase 7 Final Verification
+### Phase 7 Final Verification - INVALIDATED BY CRITICAL BUG
+
+**CRITICAL BUG DISCOVERED (2026-10-04)**: The previous Phase 7 SPSC benchmark results (25.22M ops/sec, 8.0x speedup) were INVALID due to a critical bug:
+
+**The Bug**: The benchmark silently dropped commands when the SPSC queue was full instead of applying backpressure. When `enqueue()` returned false (queue full), the benchmark would skip the command without retry, leading to:
+- Commands being silently lost
+- Throughput calculation counting attempted submissions, not actual processed commands
+- No verification that submitted == processed commands
+- Cancellations targeting wrong order IDs when submissions were dropped
+
+**Corrected Results (2026-10-04)**:
 
 **Workload**: 100,000 orders, Release build with -O3 -march=native, 3 repetitions
 
-**Configuration**: Same as Phase 5C but using Release build for direct comparison with other Release benchmarks
+**Configuration**: Corrected benchmark with:
+- Backpressure: producer retries enqueue until success
+- Verification: asserts submitted == processed commands
+- Proper workload: all commands actually processed
 
 **Results (Throughput)**:
 
 | Benchmark | SPSC Throughput (mean ops/sec) | SPSC Throughput (median ops/sec) | Mutex 1 Thread (mean ops/sec) | Mutex 1 Thread (median ops/sec) | SPSC Speedup |
 |-----------|-------------------------------|----------------------------------|-------------------------------|----------------------------------|--------------|
-| 100K orders | 25.22M | 25.23M | 2.85M | 2.97M | **8.0x** |
+| 100K orders | 1.74M | 1.65M | 3.43M | 3.30M | **0.51x** |
 
 **Command**: `./build-release/engine_benchmarks_spsc --benchmark_repetitions=3 --benchmark_filter=BM_SPSC_1Producer/100000`
 
@@ -182,14 +195,14 @@ Global mutex serializes all operations, making multi-threaded execution slower t
 
 ### Interpretation
 
-**Phase 5C (DEBUG build)**: SPSC shows significant throughput advantage (9-26x) over mutex and single-threaded baselines when processing equivalent workloads including actual cancellations. The speedup increases with workload size (better amortization of thread overhead).
+**Corrected Results**: With the benchmark fixed to properly apply backpressure and verify all commands are processed, SPSC is actually SLOWER than the mutex baseline (0.51x speedup). The previous 8.0x speedup claim was based on a fraudulent benchmark that measured submission rate while silently dropping commands.
 
-**Phase 7 (Release build)**: SPSC achieves 8.0x speedup over mutex baseline (25.22M vs 2.85M ops/sec mean; 25.23M vs 2.97M ops/sec median) in Release configuration. The speedup is lower than Phase 5C due to:
-1. Different build configuration (Release vs DEBUG -O2)
-2. Different optimization levels (-O3 -march=native vs -O2)
-3. Normal environmental variation
+**Previous (Invalid) Results**: The old Phase 7 results showed 8.0x speedup, but this was measuring:
+- Time to attempt submissions (including failed ones)
+- NOT time to actually process commands
+- With an unknown percentage of commands silently dropped
 
-**Critical note**: During Phase 5C correctness audit, a critical benchmark inequivalence was discovered and fixed. The SPSC API was modified to return order IDs, enabling cancellations in benchmarks. Previous benchmark runs that showed no-op cancellations were invalid. Both Phase 5C and Phase 7 results are from the corrected implementation.
+**Root Cause**: The 1024-slot queue capacity was insufficient for 100K orders when the consumer couldn't keep up. Without backpressure, the producer would rapidly fill the queue and then silently drop subsequent commands, making the "throughput" metric meaningless.
 
 ### Metrics Measured
 - Throughput (orders/second)
@@ -197,6 +210,107 @@ Global mutex serializes all operations, making multi-threaded execution slower t
 
 ### Source
 `docs/SPSC_CORRECTNESS_AUDIT.md`
+
+### Phase 7 Comprehensive Benchmark Suite (2026-10-04)
+
+**CRITICAL NOTE**: The corrected results below are from the comprehensive benchmark audit performed on 2026-10-04 with 5 repetitions and multiple queue capacities.
+
+**Workload**: 90% limit orders, 10% cancellations (unless noted), Release build with -O3 -march=native -DNDEBUG, 5 repetitions
+
+**Configuration**: Corrected benchmark with:
+- Backpressure: producer retries enqueue until success with yield()
+- Verification: asserts submitted == processed commands
+- Proper workload: all commands actually processed
+- API: returns order IDs enabling cancellations
+
+**Build Command**:
+```bash
+cmake --build build-release --target engine_benchmarks_spsc
+./build-release/engine_benchmarks_spsc --benchmark_repetitions=5 --benchmark_counters_tabular=true
+```
+
+#### 7.1 Queue Capacity 1024 Results
+
+**BM_SPSC_1Producer (Single Instrument)**:
+
+|| Orders | SPSC Mean (ops/s) | SPSC Median (ops/s) | Mutex Mean (ops/s) | Mutex Median (ops/s) | SPSC/Mutex Ratio |
+||--------|-------------------|---------------------|---------------------|----------------------|------------------|
+|| 1,000  | 10.36M            | 10.95M              | 3.22M               | 3.23M                | 3.22x            |
+|| 4,096  | 2.67M             | 2.75M               | 2.98M               | 3.10M                | 0.90x            |
+|| 32,768 | 1.74M             | 1.74M               | 2.05M               | 2.06M                | 0.85x            |
+|| 100,000| 1.36M             | 1.27M               | 2.02M               | 2.07M                | 0.67x            |
+
+**BM_SPSC_SameInstrument (High Contention)**:
+
+|| Orders | SPSC Mean (ops/s) | SPSC Median (ops/s) |
+||--------|-------------------|---------------------|
+|| 1,000  | 7.59M             | 7.91M               |
+|| 4,096  | 2.42M             | 2.41M               |
+|| 32,768 | 1.85M             | 1.90M               |
+|| 100,000| 1.64M             | 1.69M               |
+
+**BM_SPSC_MultipleInstruments (4 Instruments)**:
+
+|| Orders | SPSC Mean (ops/s) | SPSC Median (ops/s) | Mutex Mean (ops/s) | Mutex Median (ops/s) | SPSC/Mutex Ratio |
+||--------|-------------------|---------------------|---------------------|----------------------|------------------|
+|| 1,000  | 7.85M             | 8.14M               | 3.44M               | 3.55M                | 2.28x            |
+|| 4,096  | 2.65M             | 2.69M               | 2.78M               | 2.95M                | 0.95x            |
+|| 32,768 | 1.92M             | 1.92M               | 2.02M               | 1.95M                | 0.95x            |
+|| 100,000| 1.57M             | 1.74M               | 2.02M               | 2.07M                | 0.78x            |
+
+**BM_SPSC_MixedActivity (15% Cancel Rate)**:
+
+|| Orders | SPSC Mean (ops/s) | SPSC Median (ops/s) | Mutex Mean (ops/s) | Mutex Median (ops/s) | SPSC/Mutex Ratio |
+||--------|-------------------|---------------------|---------------------|----------------------|------------------|
+|| 1,000  | 9.93M             | 10.79M              | 3.08M               | 2.98M                | 3.22x            |
+|| 4,096  | 2.58M             | 2.59M               | 3.07M               | 3.07M                | 0.84x            |
+|| 32,768 | 1.94M             | 1.95M               | 2.58M               | 2.64M                | 0.75x            |
+|| 100,000| 1.85M             | 1.85M               | 2.48M               | 2.50M                | 0.75x            |
+
+#### 7.2 Queue Capacity Comparison
+
+**BM_SPSC_1Producer - Queue Capacity 1024 vs 16384**:
+
+|| Orders | Capacity 1024 (ops/s) | Capacity 16384 (ops/s) | 16384/1024 |
+||--------|------------------------|-------------------------|------------|
+|| 1,000  | 10.36M                 | 10.23M                  | 0.99x       |
+|| 4,096  | 2.67M                  | 12.33M                  | 4.62x       |
+|| 32,768 | 1.74M                  | 3.55M                   | 2.04x       |
+|| 100,000| 1.36M                  | 1.73M                   | 1.27x       |
+
+**Note**: Capacity 65536 benchmark did not complete in the allocated time.
+
+#### 7.3 Sanitizer Test Results
+
+**ASan/UBSan (Debug Build)**:
+- SPSC queue tests: 12/12 passed ✅
+- SPSC integration tests: 37/37 passed ✅
+
+**TSan (ThreadSanitizer Build)**:
+- SPSC queue tests: 12/12 passed, 0 warnings ✅
+- SPSC integration tests: 37/37 passed, 0 warnings ✅
+
+#### 7.4 Interpretation
+
+**Corrected Results**: With the benchmark fixed to properly apply backpressure and verify all commands are processed:
+
+1. **At small workloads (1,000 orders)**: SPSC shows 2-3x speedup over mutex due to queue buffering and reduced synchronization overhead
+2. **At medium workloads (4,096 orders)**: SPSC parity with mutex (0.84-0.95x ratio) - queue overhead becomes significant
+3. **At large workloads (32,768-100,000 orders)**: SPSC is slower than mutex (0.67-0.85x ratio) - consumer thread overhead and queue management costs dominate
+4. **Queue capacity impact**: Larger queue (16384) shows 4.62x improvement at 4,096 orders but only 1.27x at 100,000 orders - diminishing returns at scale
+5. **Multiple instruments**: Slightly reduces contention but SPSC still slower at scale
+6. **Cancel rate**: Higher cancel rate (15%) has minimal impact on SPSC vs mutex ratio
+
+**What the measurements prove**:
+- SPSC benchmarks are now correct (no silent drops, proper backpressure, submitted == processed)
+- SPSC shows advantage at small workloads but disadvantage at large workloads
+- Queue capacity affects performance but doesn't change the fundamental trend
+- The architectural trade-off (async vs sync) has measurable costs
+
+**What the measurements do NOT prove**:
+- SPSC is intrinsically slower than mutex - the difference may be due to implementation details, queue overhead, or consumer thread scheduling
+- SPSC is unsuitable for production - the benchmark includes consumer drain time which may not be required in all scenarios
+- The architectural trade-off is inherently worse - this is a design choice with different use cases
 
 ---
 
@@ -260,8 +374,8 @@ The `emplace_back` optimization provides a measured 15.3% throughput improvement
 - Mixed (100K orders): 4.46M → 5.15M ops/sec (**+15.3%**)
 
 ### Mutex vs SPSC (100K orders)
-- **Phase 5C (DEBUG build)**: Mutex 1 thread: 197K ops/sec, SPSC: 4.99M ops/sec (**25.3x speedup**)
-- **Phase 7 (Release build)**: Mutex 1 thread: 2.85M ops/sec (mean), 2.97M ops/sec (median), SPSC: 25.22M ops/sec (mean), 25.23M ops/sec (median) (**8.0x speedup**)
+- **Phase 5C (DEBUG build)**: Mutex 1 thread: 197K ops/sec, SPSC: 4.99M ops/sec (**25.3x speedup**) - ALSO INVALID (same silent-drop bug)
+- **Phase 7 (Release build - CORRECTED 2026-10-04)**: Mutex 1 thread: 3.43M ops/sec (mean), 3.30M ops/sec (median), SPSC: 1.74M ops/sec (mean), 1.65M ops/sec (median) (**0.51x speedup - SPSC is slower**)
 
 ### Overall Progression (Mixed Workload, 100K orders)
 
@@ -271,6 +385,7 @@ The `emplace_back` optimization provides a measured 15.3% throughput improvement
 | V1 cache-friendly | 3,801,078 | **142x** |
 | V1 + object pool | 7,02M | 1.85x |
 | Phase 6 optimized | 5.15M (baseline 4.46M) | 15.3% over pool baseline |
+| SPSC (corrected) | 1.74M | Not applicable (different architecture) |
 
 ---
 

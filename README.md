@@ -74,7 +74,7 @@ Each instrument maintains its own order book with:
 - **Architecture**: Producer thread → SPSC queue → Consumer thread (sole writer of order book state)
 - **Memory ordering**: Acquire/release semantics for correct synchronization
 - **Single-writer invariant**: Only the consumer thread directly mutates order-book state
-- **Performance**: 8.0x throughput advantage over mutex baseline in Release configuration
+- **Performance**: 0.51x vs mutex baseline at 100K orders (SPSC is slower in corrected benchmarks - see docs/SPSC_CORRECTNESS_AUDIT.md for details)
 
 ## Order Lifecycle
 
@@ -198,14 +198,25 @@ This ensures the consumer sees fully constructed values and the producer sees an
 
 ### Mutex vs SPSC (100K orders, Release build)
 
-| Architecture | Throughput (mean) | Throughput (median) | vs Mutex Baseline |
-|--------------|-------------------|---------------------|-------------------|
-| Mutex 1 thread | 2.85M ops/sec | 2.97M ops/sec | 1.00x |
-| SPSC (1 producer) | 25.22M ops/sec | 25.23M ops/sec | **8.0x** |
+**CRITICAL CORRECTION**: Previous SPSC benchmark results (25.22M ops/sec, 8.0x speedup) were INVALID due to a critical bug: the benchmark silently dropped commands when the queue was full instead of applying backpressure. The corrected benchmark now ensures all submitted commands are processed and verifies submitted == processed.
 
-**Command**: `./build-release/engine_benchmarks_spsc --benchmark_repetitions=3 --benchmark_filter=BM_SPSC_1Producer/100000`
+**Corrected Results (2026-10-04 Comprehensive Benchmark Suite)**:
 
-**Interpretation**: SPSC achieves 8.0x speedup over mutex baseline by eliminating lock contention and using a lock-free ingestion path.
+See `docs/SPSC_CORRECTNESS_AUDIT.md` (Part 6) for complete benchmark results including:
+- Multiple workload sizes (1K, 4K, 32K, 100K orders)
+- Multiple configurations (single instrument, multiple instruments, mixed activity)
+- Queue capacity comparison (1024, 16384 slots)
+- Detailed SPSC vs mutex comparison
+
+**Summary**:
+- At 1,000 orders: SPSC 2-3x faster than mutex (queue buffering advantage)
+- At 4,096 orders: SPSC parity with mutex (0.84-0.95x ratio)
+- At 32,768-100,000 orders: SPSC slower than mutex (0.67-0.85x ratio)
+- Queue capacity 16384 shows 4.62x improvement at 4,096 orders but only 1.27x at 100,000 orders
+
+**Command**: `./build-release/engine_benchmarks_spsc --benchmark_repetitions=5 --benchmark_counters_tabular=true`
+
+**Interpretation**: With the corrected benchmark that properly applies backpressure and verifies all commands are processed, SPSC shows advantage at small workloads but disadvantage at large workloads. The architectural trade-off (async vs sync) has measurable costs. See `docs/SPSC_CORRECTNESS_AUDIT.md` for detailed analysis.
 
 ### Overall Progression (Mixed workload, 100K orders)
 
