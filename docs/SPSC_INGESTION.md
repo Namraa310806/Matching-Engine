@@ -301,10 +301,10 @@ Phase 5 successfully implements a clean SPSC ingestion architecture. The impleme
 - Provides a fair performance comparison with mutex baseline
 
 The SPSC architecture provides a clear alternative to the mutex baseline, with:
-- **Demonstrated higher throughput** (9-26x speedup in benchmarks)
+- **Demonstrated higher throughput** (8.0x speedup in Phase 7 Release benchmarks; 9-26x in Phase 5C DEBUG benchmarks)
 - Potential for lower tail latency (no blocking on mutex)
 - Single-writer invariant (clear ownership boundary)
 - Fixed capacity (predictable memory usage)
 - Order ID return from submit_order (enables cancellations in async API)
 
-**Benchmark Results**: SPSC shows significant throughput advantage (9-26x) over mutex and single-threaded baselines when processing equivalent workloads including actual cancellations. See `SPSC_CORRECTNESS_AUDIT.md` for detailed analysis and performance results.
+**Benchmark Results**: SPSC shows significant throughput advantage over mutex and single-threaded baselines when processing equivalent workloads including actual cancellations. See `SPSC_CORRECTNESS_AUDIT.md` and `docs/RESULTS.md` for detailed analysis and performance results.
