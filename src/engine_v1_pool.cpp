@@ -102,7 +102,7 @@ std::pair<std::vector<Trade>, std::vector<MarketDataEvent>> OrderBookV1Pool::sub
     working_order.sequence = ++sequence_;
 
     // Generate order received event
-    events.push_back(create_order_event(working_order, MarketDataEventType::OrderAdded));
+    events.emplace_back(create_order_event(working_order, MarketDataEventType::OrderAdded));
 
     // Attempt to match based on side
     if (working_order.side == Side::Buy) {
@@ -150,7 +150,7 @@ std::pair<std::vector<Trade>, std::vector<MarketDataEvent>> OrderBookV1Pool::mat
 
             // Create trade event
             Trade trade("", order.id, resting_order.id, best_ask, trade_qty, ++sequence_);
-            trades.push_back(trade);
+            trades.emplace_back(std::move(trade));
 
             // Update filled quantities
             order.filled += trade_qty;
@@ -158,9 +158,9 @@ std::pair<std::vector<Trade>, std::vector<MarketDataEvent>> OrderBookV1Pool::mat
 
             // Generate market data events
             if (resting_order.is_fully_filled()) {
-                events.push_back(create_order_event(resting_order, MarketDataEventType::OrderFullyFilled));
+                events.emplace_back(create_order_event(resting_order, MarketDataEventType::OrderFullyFilled));
             } else {
-                events.push_back(create_order_event(resting_order, MarketDataEventType::OrderPartiallyFilled));
+                events.emplace_back(create_order_event(resting_order, MarketDataEventType::OrderPartiallyFilled));
             }
 
             // Remove fully filled resting order from index and list
@@ -179,9 +179,9 @@ std::pair<std::vector<Trade>, std::vector<MarketDataEvent>> OrderBookV1Pool::mat
 
     // Generate event for incoming order if it was filled
     if (order.is_fully_filled()) {
-        events.push_back(create_order_event(order, MarketDataEventType::OrderFullyFilled));
+        events.emplace_back(create_order_event(order, MarketDataEventType::OrderFullyFilled));
     } else if (order.is_partially_filled()) {
-        events.push_back(create_order_event(order, MarketDataEventType::OrderPartiallyFilled));
+        events.emplace_back(create_order_event(order, MarketDataEventType::OrderPartiallyFilled));
     }
 
     return {trades, events};
@@ -214,7 +214,7 @@ std::pair<std::vector<Trade>, std::vector<MarketDataEvent>> OrderBookV1Pool::mat
 
             // Create trade event
             Trade trade("", resting_order.id, order.id, best_bid, trade_qty, ++sequence_);
-            trades.push_back(trade);
+            trades.emplace_back(std::move(trade));
 
             // Update filled quantities
             order.filled += trade_qty;
@@ -222,9 +222,9 @@ std::pair<std::vector<Trade>, std::vector<MarketDataEvent>> OrderBookV1Pool::mat
 
             // Generate market data events
             if (resting_order.is_fully_filled()) {
-                events.push_back(create_order_event(resting_order, MarketDataEventType::OrderFullyFilled));
+                events.emplace_back(create_order_event(resting_order, MarketDataEventType::OrderFullyFilled));
             } else {
-                events.push_back(create_order_event(resting_order, MarketDataEventType::OrderPartiallyFilled));
+                events.emplace_back(create_order_event(resting_order, MarketDataEventType::OrderPartiallyFilled));
             }
 
             // Remove fully filled resting order from index and list
@@ -243,9 +243,9 @@ std::pair<std::vector<Trade>, std::vector<MarketDataEvent>> OrderBookV1Pool::mat
 
     // Generate event for incoming order if it was filled
     if (order.is_fully_filled()) {
-        events.push_back(create_order_event(order, MarketDataEventType::OrderFullyFilled));
+        events.emplace_back(create_order_event(order, MarketDataEventType::OrderFullyFilled));
     } else if (order.is_partially_filled()) {
-        events.push_back(create_order_event(order, MarketDataEventType::OrderPartiallyFilled));
+        events.emplace_back(create_order_event(order, MarketDataEventType::OrderPartiallyFilled));
     }
 
     return {trades, events};
@@ -398,7 +398,7 @@ std::pair<bool, std::vector<MarketDataEvent>> OrderBookV1Pool::cancel_order(Orde
     }
 
     // Generate cancellation event
-    events.push_back(create_order_event(node->order, MarketDataEventType::OrderCancelled));
+    events.emplace_back(create_order_event(node->order, MarketDataEventType::OrderCancelled));
 
     // Remove from price level (O(1) with intrusive list)
     level->remove(node);
